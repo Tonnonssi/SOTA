@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chair_rl"
+version = "0.0.1"
+description = "Chair-type tripedal robot: Isaac Lab RL env (paper arXiv:2404.05932)"
+requires-python = ">=3.11"
+dependencies = ["numpy"]
+
+[tool.setuptools]
+packages = ["chair_rl"]
+
+[tool.pytest.ini_options]
+testpaths = ["."]
+markers = [
+    "isaac: Isaac Sim(Kit) 기동이 필요한 테스트. `--isaac` 없이는 skip.",
+]
