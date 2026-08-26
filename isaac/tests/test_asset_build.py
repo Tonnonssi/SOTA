@@ -38,6 +38,11 @@ def test_file_layer_mass_authored_and_single_root(kit_app, usd_path):
         assert m.GetMassAttr().Get() == pytest.approx(spec.mass, rel=1e-6)
         np.testing.assert_allclose(list(m.GetCenterOfMassAttr().Get()), spec.com, atol=1e-7)
         np.testing.assert_allclose(list(m.GetDiagonalInertiaAttr().Get()), spec.inertia, rtol=1e-5)
+        q = m.GetPrincipalAxesAttr().Get()          # Gf.Quatf: real + imaginary
+        got = np.array([q.GetReal(), *q.GetImaginary()])
+        want = np.array(spec.axes_wxyz)
+        # q 와 -q 는 같은 회전이다
+        assert min(np.abs(got - want).max(), np.abs(got + want).max()) < 1e-6, name
 
 
 def test_cache_hit_returns_same_path(kit_app, usd_path):
