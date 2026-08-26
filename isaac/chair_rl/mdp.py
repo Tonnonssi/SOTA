@@ -118,3 +118,51 @@ def walk_total(terms: dict, w: WalkRewardWeights, terminated: torch.Tensor) -> t
              + w.heading * terms["heading"] + w.action * terms["action"] + w.vel * terms["vel"]
              + w.alive)
     return torch.where(terminated, torch.full_like(total, w.death), total)
+
+
+# ---------------------------------------------------------------- 종료 조건 (Table III)
+
+# 좌면 플레이트 바닥면의 꼭짓점 4개, 좌면 중심(dummy) 기준 m. MuJoCo 로 잰 값 (계획 문서
+# "확정된 상수"): x∈[-0.082,+0.076], y∈[-0.077,+0.081], 바닥면 z=-0.011.
+SEAT_CORNERS_LOCAL = (
+    (-0.082, -0.077, -0.011), (-0.082, 0.081, -0.011),
+    (0.076, -0.077, -0.011), (0.076, 0.081, -0.011),
+)
+TILT_THRESH = 0.7    # ||q - [0,0,0,1]|| > 0.7  (≈ 82°, yaw 포함)
+GROUND_Z = 0.005     # 모서리 월드 z < 5 mm 면 "접지"
+HEIGHT_MIN = 0.005   # 좌면 중심 z < 5 mm
+
+
+def seat_corner_heights(root_pos: torch.Tensor, root_quat: torch.Tensor,
+                        corners_local=None) -> torch.Tensor:
+    """모서리 4개의 월드 z (N,4). 접촉 센서 없이 기하로 계산한다 (§9.4)."""
+    c = torch.tensor(corners_local or SEAT_CORNERS_LOCAL, dtype=root_pos.dtype, device=root_pos.device)  # (4,3)
+    n = root_pos.shape[0]
+    q = root_quat.repeat_interleave(4, dim=0)                 # (N*4, 4)
+    v = c.repeat(n, 1)                                        # (N*4, 3)
+    world = quat_rotate(q, v).view(n, 4, 3) + root_pos[:, None, :]
+    return world[..., 2]
+
+
+def quat_dist_to_identity(q: torch.Tensor) -> torch.Tensor:
+    """||q - [0,0,0,1]||. q 와 -q 는 같은 회전이므로 w >= 0 으로 맞춘 뒤 잰다."""
+    sign = torch.where(q[:, 3:4] < 0, -1.0, 1.0)
+    qc = q * sign
+    ident = torch.tensor([0.0, 0.0, 0.0, 1.0], dtype=q.dtype, device=q.device)
+    return (qc - ident).norm(dim=-1)
+
+
+def walk_terminated(root_pos: torch.Tensor, root_quat: torch.Tensor):
+    """Table III 의 리셋 조건 중 시간 초과를 뺀 셋. (terminated, {tilt, ground, height})."""
+    reasons = {
+        "tilt": quat_dist_to_identity(root_quat) > TILT_THRESH,
+        "ground": seat_corner_heights(root_pos, root_quat).min(dim=-1).values < GROUND_Z,
+        "height": root_pos[:, 2] < HEIGHT_MIN,
+    }
+    terminated = reasons["tilt"] | reasons["ground"] | reasons["height"]
+    return terminated, reasons
+
+
+def walk_truncated(episode_len: torch.Tensor, max_len: int) -> torch.Tensor:
+    """350 스텝 초과는 실패가 아니라 시간 초과다 — terminated 와 섞지 않는다 (§4)."""
+    return episode_len >= max_len

@@ -114,3 +114,53 @@ def test_walk_reward_terms_shapes_and_keys():
     assert set(terms) == {"progress", "height", "up", "heading", "action", "vel"}
     assert all(t.shape == (N,) for t in terms.values()) and pot2.shape == (N,)
     assert terms["up"][0].item() == pytest.approx(1.0) and terms["height"][0].item() == pytest.approx(1.0)
+
+
+# ---------- 종료 조건 ----------
+
+def test_quat_dist_threshold_is_about_82_degrees():
+    # ||q - id||^2 = 2 - 2cos(θ/2) -> 0.7 은 θ ≈ 82.0°
+    for deg, expect in [(80, False), (84, True)]:
+        for axis in ([1, 0, 0], [0, 1, 0], [0, 0, 1]):      # roll, pitch, **yaw** 모두 센다
+            q = quat_xyzw(axis, deg)[None]
+            assert (mdp.quat_dist_to_identity(q) > mdp.TILT_THRESH).item() is expect, (deg, axis)
+
+
+def test_quat_dist_ignores_sign():
+    q = -IDENT[None]     # 같은 회전(항등)의 다른 부호 표현
+    assert mdp.quat_dist_to_identity(q).item() == pytest.approx(0.0)
+
+
+def test_seat_corners_upright_and_rolled():
+    center = torch.tensor([[0.095, 0.0785, 0.10365]], dtype=torch.float64)   # 서 있을 때 dummy
+    z_up = mdp.seat_corner_heights(center, IDENT[None])
+    assert z_up.shape == (1, 4)
+    torch.testing.assert_close(z_up, torch.full((1, 4), 0.10365 - 0.011, dtype=torch.float64))
+    # x축 90° 굴러 좌면이 수직: y 방향 반폭이 z 로 간다. 중심 z=0.06 이면 아래 모서리가 바닥 밑.
+    low = torch.tensor([[0.0, 0.0, 0.06]], dtype=torch.float64)
+    z_roll = mdp.seat_corner_heights(low, quat_xyzw([1, 0, 0], 90)[None])
+    assert z_roll.min().item() < 0.0 and z_roll.max().item() > 0.1
+
+
+def test_walk_terminated_reasons():
+    stand = torch.tensor([[0.095, 0.0785, 0.10365]], dtype=torch.float64)
+    term, why = mdp.walk_terminated(stand, IDENT[None])
+    assert term.item() is False and not any(v.item() for v in why.values())
+    # tilt
+    term, why = mdp.walk_terminated(stand, quat_xyzw([0, 1, 0], 84)[None])
+    assert term.item() is True and why["tilt"].item() is True
+    # ground: 좌면이 수직이고 중심이 낮음
+    term, why = mdp.walk_terminated(torch.tensor([[0., 0., 0.06]], dtype=torch.float64), quat_xyzw([1, 0, 0], 90)[None])
+    assert term.item() is True and why["ground"].item() is True
+    # height: 좌면 중심이 5 mm 아래
+    term, why = mdp.walk_terminated(torch.tensor([[0., 0., 0.004]], dtype=torch.float64), IDENT[None])
+    assert term.item() is True and why["height"].item() is True
+    assert set(why) == {"tilt", "ground", "height"}
+
+
+def test_truncation_is_separate_from_termination():
+    ep = torch.tensor([349, 350, 351])
+    torch.testing.assert_close(mdp.walk_truncated(ep, 350), torch.tensor([False, True, True]))
+    stand = torch.tensor([[0.095, 0.0785, 0.10365]] * 3, dtype=torch.float64)
+    term, _ = mdp.walk_terminated(stand, IDENT.expand(3, 4))
+    assert not term.any()     # 시간 초과는 terminated 에 섞이지 않는다
