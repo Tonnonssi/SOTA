@@ -1,7 +1,8 @@
 # Isaac Sim 상에서 걷기·일어서기 정책 학습 — 설계
 
 작성 2026-08-25. 갱신 2026-08-26.
-상태: **섹션 1~8 작성 완료.** §4는 논문 표 실값으로, §2는 2026-08-26 실측으로 정정됨.
+상태: **섹션 1~9 작성 완료.** §4는 논문 표 실값으로, §2·§3은 2026-08-26 실측으로 정정됨.
+§9(핵심 뼈대)가 구현 계획의 직접 입력이다.
 섹션 2(system ID)가 나머지 전부의 선행조건이다 — 그것이 통과하기 전 학습은 시작하지 않는다.
 **현재 §2는 미통과다**: 임포트 질량 오류(§2①)와 MJCF timestep 발산(§2⑤)을 먼저 고쳐야 한다.
 
@@ -133,7 +134,8 @@ Chair-TypeAsymmetricalTripedalRobot/
     ├── pyproject.toml         ← 신규: pip install -e isaac/
     ├── chair_rl/              ← 신규 패키지
     │   ├── __init__.py            gym.register 2개
-    │   ├── chair_asset.py         MJCF→USD 변환 + ArticulationCfg + 서보 액추에이터 모델
+    │   ├── chair_asset.py         MJCF→USD 변환 + 후처리(질량 굽기) + ArticulationCfg  (§9.2)
+    │   ├── mass_spec.py           바디별 질량·관성·COM 상수, 출처 MuJoCo  (§2①, §9.2)
     │   ├── obs_layout.py          40차원 관측 레이아웃 규약 (실기와의 계약)
     │   ├── mdp.py                 순수 함수: 관측·보상·종료 수식 (torch만 의존)
     │   ├── base_env.py            두 태스크의 공통 DirectRLEnv
@@ -196,8 +198,10 @@ MuJoCo 뷰어로 액추에이터를 손튜닝한 대상이 이 모델이므로 M
 (leg만 5% 낮은데, PhysX convex cooking의 정점 수 제한에 따른 단순화로 설명된다).
 `dummy`는 geom이 하나도 없어 추론할 것이 없자 폴백 1 kg을 받았다.
 
-**대응:** `chair_asset.py`에서 임포트 직후 질량과 관성을 **명시적으로 덮어쓴다.**
-임포터가 밀도를 무시하는 이상 USD의 질량 특성을 믿으면 안 된다.
+**대응:** `chair_asset.py`의 USD 후처리 단계에서 질량과 관성을 **MassAPI로 덮어써 USD에
+굽는다**(§9.2). 임포터가 밀도를 무시하는 이상 변환 직후의 USD를 믿으면 안 된다.
+런타임 events가 아니라 파일에 굽는 이유는 재생기 `chair_sim.py`가 같은 파일을 쓰기
+때문이다.
 관성은 질량비 스케일이 아니라 MuJoCo의 `body_inertia`/`body_iquat`/`body_ipos`를
 그대로 옮기는 것이 옳다 — 볼록껍질 기반 분포는 bracket에서 부피가 3.2배 어긋나 있어
 질량만 맞춰도 관성 분포가 남는다.
@@ -301,7 +305,8 @@ MuJoCo 뷰어로 액추에이터를 손튜닝한 대상이 이 모델이므로 M
 
 ### 섹션 2의 합격선 (2026-08-26 재정의)
 
-> **정의된 넘어진 자세에서 시작해 `SLEEPING → STANDING` 구간을 재생하면 일어서야 한다.**
+> **루트가 수직인 웅크린 자세에서 시작해 `SLEEPING → STANDING` 구간을 재생하면
+> 일어서야 한다.**
 > 이게 안 되면 학습 단계로 넘어가지 않는다. 모델이 틀린 채로 PPO를 돌리면 정책이 그 틀린
 > 물리를 착취하고, 그건 실기에서 그대로 무너진다.
 
@@ -318,12 +323,76 @@ MuJoCo 뷰어로 액추에이터를 손튜닝한 대상이 이 모델이므로 M
 전체 시퀀스의 성공/실패를 세면 "넘어뜨리기가 잘 됐는가"와 "일어서기가 됐는가"가
 뒤섞인다. 그래서 초기 자세를 고정하고 기립 구간만 잰다.
 
-**초기 자세는 섹션 5가 정의한 3종(오른쪽·왼쪽·등)을 그대로 쓴다.** §2 게이트와 §5의
-stand 초기 분포가 같은 구성을 공유하게 되고, 게이트를 통과한 자세가 곧 학습 초기
-분포가 된다.
+**2026-08-26 범위 축소:** 고정 키프레임은 임의 방향의 넘어진 자세를 복구하는 정책이
+아니다. 따라서 이 게이트에서는 오른쪽·왼쪽·등 3종을 다루지 않는다. 루트 쿼터니언을
+`(w,x,y,z)=(1,0,0,0)`으로 두고 관절을 `SLEEPING_POS`로 만든 뒤 물리적으로 안정화한다.
+즉 검증 대상은 "다양한 각도에서 일어나기"가 아니라 **수직 상태에서 웅크렸다가 다리를
+펴며 몸체를 들어 올리기**다. 다양한 초기 방향은 이후 학습 정책의 별도 과제다.
 
-**판정:** 3종 각각에서 `u_prj > 0.95`(실기 `src/rl_stand.py`의 FSM 임계값) 도달.
-측정에 쓰는 도구는 §5의 초기자세 생성기와 **같은 코드**여야 한다.
+**판정:** `u_prj > 0.95`(실기 `src/rl_stand.py`의 FSM 임계값)이면서 articulation root 높이가 안정화
+직후보다 10 mm 이상 올라가야 한다. 방향만 수직인 채 이미 낮게 서 있는 상태를 성공으로
+잘못 세지 않도록 두 조건을 함께 본다. 2026-08-26 실측은 `u_prj 0.998 → 1.000`, root
+높이 `0.061 → 0.101 m`(`+0.040 m`)로 통과했다.
+
+### 수직 웅크림 기립을 직접 WebRTC로 재생하는 절차
+
+현재 실행기는 아직 저장소에 승격되지 않은 진단용 스크래치다. 아래 절차는 이 문서를
+작성한 워크스테이션에서 검증한 경로를 그대로 사용한다. `/tmp`가 정리되면
+`rise_only.py`와 `keyframes.py`를 저장소의 `isaac/scripts/`로 옮긴 뒤 경로를 갱신해야
+한다.
+
+1. 기존 Isaac/WebRTC 실행을 종료한다. 같은 이름의 세션이 없다는 오류는 무시해도 된다.
+
+   ```bash
+   tmux kill-session -t crouch_rise_webrtc 2>/dev/null || true
+   ```
+
+2. 스크래치 디렉터리로 이동한다.
+
+   ```bash
+   cd /tmp/claude-1000/-home-tonnonssi-SOTA/1faa6ebb-76a4-40a5-8e39-8e75ce479186/scratchpad
+   ```
+
+3. Tailscale 주소를 WebRTC 서버에 넘기고 10회 재생한다. 매 회차는 웅크림 5초,
+   `SLEEPING → STANDING` 보간 1.5초(20 Hz, 30프레임), 기립 유지 2.5초, 다음 회차 전
+   1초 정지 순서다. `tmux`를 쓰는 이유는 터미널 연결이 끊겨도 Isaac 프로세스를 유지하기
+   위해서다.
+
+   ```bash
+   STREAM_IP=$(tailscale ip -4)
+   echo "$STREAM_IP"
+   tmux new-session -d -s crouch_rise_webrtc \
+     "PUBLIC_IP=$STREAM_IP /home/tonnonssi/miniforge3/envs/env_isaaclab/bin/python -u rise_only.py \
+       --livestream 1 --loops 10 --settle 5.0 --hold 2.5 --pause 1.0 \
+       2>&1 | tee crouch_rise_webrtc.log"
+   ```
+
+4. 준비 상태와 회차별 측정값을 확인한다.
+
+   ```bash
+   tmux capture-pane -pt crouch_rise_webrtc -S -80
+   ```
+
+   로그에 `준비 완료`가 나온 뒤 Isaac Sim WebRTC Streaming Client에서 3단계에 출력된
+   Tailscale IPv4 주소로 접속한다. 화면이 이전 실행의 마지막 프레임에 머물면 클라이언트
+   연결을 끊고 다시 연결한다. 각 회차의 `z`, `dz`, `u_prj`, `기립!` 판정은
+   `crouch_rise_webrtc.log`에도 남는다.
+
+5. 도중에 멈추거나 10회 종료 뒤 Isaac이 WebRTC 종료 처리에서 남아 있으면 세션을
+   종료한다.
+
+   ```bash
+   tmux kill-session -t crouch_rise_webrtc
+   ```
+
+   종료 확인:
+
+   ```bash
+   pgrep -af 'rise_only.py.*livestream'
+   nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader
+   ```
+
+   두 명령에서 `rise_only.py`나 해당 Isaac Python 프로세스가 나오지 않으면 종료된 것이다.
 
 ### Isaac Lab 매핑
 
@@ -381,11 +450,21 @@ env의 `_get_observations`도 같은 순서여야 한다.
 
 ### 위치·자세의 기준 바디
 
-논문의 `p`(높이)와 `u_prj`(직립도)는 모두 **좌면(seat)** 기준이다. Isaac에서는 MJCF의
-`chair` 바디가 좌면에 해당한다. 루트 바디는 `dummy`(freejoint 부착점)이고 좌면과
-오프셋이 있으므로, 보상·종료 계산에는 **`chair` 바디의 위치·자세를 쓴다.**
-`chair_sim.py`의 로그가 쓰는 `root_pos_w`(= `dummy`)와 값이 다르다 — 섹션 2의
-system ID 지표를 비교할 때 어느 쪽인지 항상 명시한다.
+논문의 `p`(좌면 중심)와 `u_prj`(직립도)는 **루트 바디(`dummy`)** 기준이다.
+
+> **2026-08-26 정정.** 이전에는 "`chair` 바디를 쓴다"고 적었는데 반대다. MJCF의
+> `dummy`는 `pos="0.095 0.0785 0.10365"`에 freejoint가 붙은 바디 — 좌면 크기의
+> 절반과 좌면 높이다. **저자가 freejoint를 좌면 중심에 놓은 것**이고, Isaac Gym의
+> root state = `dummy` = 논문의 `p`다. 실측이 이를 확인한다: 서 있을 때
+> `dummy z = 0.101`, `chair z = −0.002`. `chair` 바디 원점은 메시 원점(바닥 높이의
+> 모서리)이다.
+>
+> `chair`를 쓰면 height 보상 `min(1, p_z/0.08)`이 서 있어도 0이고, 리셋 조건
+> "높이 < 5 mm"가 서 있는 채로 켜진다. 방향은 두 바디가 회전 없이 강결합이라
+> 어느 쪽이든 같다.
+
+따라서 보상·종료는 `root_pos_w`/`root_quat_w`를 그대로 쓴다. `chair_sim.py`의 로그와도
+같은 값이다.
 
 ### 행동
 
@@ -433,7 +512,7 @@ decimation 12).
 |---|---|---|
 | 350 스텝 초과 | **truncation** | termination과 구분한다. PPO가 시간 초과를 실패로 오해하면 가치함수가 망가진다. `_get_dones()`가 `(terminated, truncated)`를 나눠 반환하므로 정확히 매핑 |
 | `‖q − [0,0,0,1]‖ > 0.7` | 쿼터니언 거리 | **회전각 약 82°에 해당**(‖q−q_id‖² = 2−2cos(θ/2), 0.49 대입). 그리고 **yaw도 센다** — 제자리에서 82° 돌면 리셋이다. 논문 RL 걸음새가 "35° 사선"으로 수렴한 게 이 종료조건의 압력일 가능성이 있다 |
-| 좌면 모서리 접지 | `ContactSensor` | 우리 MJCF의 좌면은 geom 하나라 "모서리"가 별도 바디가 아니다. **1안(채택): 좌면 바디 접촉력 임계값** — 근사임을 명시. 2안: 모서리 4곳에 작은 충돌체 추가(충실, MJCF 수정) |
+| 좌면 모서리 접지 | 모서리 4개의 월드 z를 기하로 계산, `min < z_thresh` | 루트 = 좌면 중심이므로(§3) 모서리 = `root_pos + R_q·(±hx, ±hy, 0)`. 접촉 센서 없이 순수 함수로 계산되고 CPU 테스트가 된다. "접지"를 "z < 임계값"으로 근사하는 것은 같지만 근사가 한 줄로 명시된다. `hx, hy`는 좌면 메시 bounds에서 |
 | 좌면 높이 < 5 mm | `p_z < 0.005` | |
 
 `death −1`은 truncation이 아니라 termination에만 적용한다.
@@ -705,20 +784,161 @@ roll/pitch/yaw, 서보 지령각 6개. 정성 비교("세 다리를 벌리고 �
 **이 단계에서는 건드리지 않는다** — 실기 이식은 별도 과업이고, 그때 경로를 인자로
 받도록 함께 고친다.
 
+## 섹션 9 — 핵심 뼈대: 단위·에셋·데이터 흐름
+
+2026-08-26 확정. 첫 태스크는 **걷기**다 — 키프레임 재생으로 sim에서 이미 되고(§2 실측),
+§2 게이트(넘어진 좌면 뒤집기)와 무관하다. 그래서 뼈대를 §2 미통과 상태에서도 끝까지
+검증할 수 있다. `stand_env`는 §2 통과 후 별도 이슈다.
+
+### 9.1 단위와 경계
+
+| 단위 | 하는 일 | 의존 | 검증 |
+|---|---|---|---|
+| `chair_asset.py` | MJCF → USD 빌드 + 후처리, `ArticulationCfg` 제공 | Isaac | 빌드된 USD의 질량·COM을 MuJoCo 값과 대조 |
+| `mass_spec.py` | 바디별 질량·관성·COM 상수 (출처 MuJoCo) + 서보 옵션 | 없음 | mujoco로 `chair.xml`을 읽은 값과 일치 |
+| `obs_layout.py` | 40차원 레이아웃 상수, 이력 버퍼 push/reset | torch만 | `src/rl_walk.py`의 numpy 로직과 동일 출력 |
+| `mdp.py` | 보상 항·종료 조건 순수 함수 (Table III/IV) | torch만 | 해석적 케이스 |
+| `base_env.py` | `DirectRLEnv` 훅 구현. 위 넷을 부르는 얇은 껍데기 | 위 넷 + Isaac | 16 env 스모크 |
+| `walk_env.py` | `WalkEnvCfg` + 가중합·종료 조합 | base_env | 스모크에 포함 |
+
+**규칙: `obs_layout`·`mdp`·`mass_spec`은 `self`를 모른다.** 텐서를 받아 텐서를 돌려준다.
+Isaac 없이 CPU에서 pytest가 돈다. §1이 약속한 "Manager-based로 갈아탈 수 있는 구조"의
+실체가 이것이다.
+
+### 9.2 에셋 빌드 — USD 하나가 진실이다
+
+```
+mjcf/chair.xml
+  → prepare_mjcf():  floor/light 제거 + 무명 <body>에 이름 부여 (bracket1..3, leg1..3)
+  → MjcfConverter:   USD 생성
+  → postprocess():   ① worldBody의 여분 ArticulationRootAPI 제거 (USD에 저장)
+                     ② 바디 8개에 MassAPI 덮어쓰기 — mass / diagonalInertia /
+                        principalAxes / centerOfMass  ← 값의 출처 = mass_spec.py
+  → isaac/usd/chair_<spec-hash>.usd   (스펙이 바뀌면 파일명이 바뀐다 = 캐시 무효화)
+```
+
+**질량 교정을 런타임 events가 아니라 USD에 굽는다.** §1이 "학습 env와 재생기는 반드시
+같은 USD"라고 못 박았다. events로 하면 `chair_sim.py`는 여전히 1725 g 모델을 재생한다.
+USD에 구우면 둘 다 공짜로 맞는다.
+
+**관성은 질량비 스케일이 아니라 직접 이식한다.** MuJoCo의 `body_inertia`(주축 관성)·
+`body_iquat`(주축 방향)·`body_ipos`(COM)가 USD `MassAPI`의 `diagonalInertia`·
+`principalAxes`·`centerOfMass`와 **정확히 같은 세 필드**다. 변환이 없다. 남는 전제는
+"임포터가 MJCF 바디 프레임을 USD 프림 프레임으로 보존한다"이고, 빌드 테스트의
+`get_coms()` 되읽기가 판정한다(열린 질문 #2).
+
+**무명 바디에 이름을 준다.** 현재 `_body_0`~`_body_5`는 임포터가 붙인 이름이라 순서
+보장이 없다. MJCF 전처리에서 `bracket1`/`leg1`…을 박으면 질량 스펙·관절 매핑·로그가
+전부 이름으로 돈다. `chair`·`dummy`가 이름을 유지한 채 넘어온 것으로 임포터가 이름을
+존중함은 확인됐다.
+
+**서보 54 g(§2②)은 `MassSpec`의 옵션 필드다.** 켜면 해시가 바뀌어 별도 USD가 나온다.
+기본값은 **MuJoCo 그대로(꺼짐)** — 저자 모델이 기준선이고, 서보 추가는 §2 system ID가
+판정할 실험 변수다.
+
+`chair_sim.py`는 `chair_asset.build_usd()`를 import해 쓰도록 바꾼다. 외부 동작(플래그,
+출력)은 유지하되 재생되는 모델의 질량이 138 g으로 바뀐다 — 이것은 수정이지 회귀가 아니다.
+
+### 9.3 한 스텝의 데이터 흐름
+
+`DirectRLEnv.step()`의 실제 호출 순서(소스 확인)에 훅을 맞춘다. 순서가 곧 정확성이다.
+
+```
+_pre_physics_step(a)   a: (N,6) 정책 출력 → clip ±0.8727 → self._act  (rad, 정책 인덱스 순)
+                       ※ 액션 노이즈(§6)는 관절로 보내는 사본에만. 이력에는 원본이 들어간다
+  ×12 { _apply_action  robot.set_joint_position_target(self._act[:, a2j])
+        sim.step }                                   ↑ 정책 인덱스 → 관절 인덱스 (find_joints, preserve_order)
+_get_dones()           mdp.walk_terminated(root_quat, root_pos, corner_z) ,
+                       episode_length_buf >= 350        → (terminated, truncated)
+_get_rewards()         mdp.walk_rewards(...) 7항 → cfg 가중치로 합. death는 terminated에만.
+                       각 항을 extras["log"]에 개별 기록
+_reset_idx(ids)        scene.reset → root/joint 초기화(§5) → potentials 재계산
+                       → obs_layout.reset_history(rot_his, act_his, ids)      ← 반드시 여기
+_get_observations()    obs_layout.push(rot_his, act_his, root_quat_xyzw, self._act)
+                       → (N,40) = [rot 4×4 | act 4×6], 최신이 앞
+```
+
+**이력 리셋이 `_reset_idx` 안에 있어야 하는 이유:** 관측은 리셋 **뒤에** 계산된다.
+다른 곳에서 하면 리셋된 env의 첫 관측에 죽은 에피소드의 이력이 섞인다. 리셋값은 §3
+그대로 — 쿼터니언 `(0,0,0,1)`, 액션 **`1.0`**.
+
+**갱신 순서:** `push`는 "이번 스텝 액션을 낸 뒤" 이력에 넣는다. `src/rl_walk.py`와
+같다. `_get_observations`가 `_pre_physics_step` 다음에 불리므로 자연히 맞는다.
+
+**progress 항의 상태:** `potentials (N,)`를 env가 들고, 리셋 시 `−‖p_target − p‖/dt`로
+재초기화한다. `mdp.progress(potentials, root_pos, p_target, dt) → (reward, new_potentials)`
+순수 함수.
+
+**관절 순서:** 아티큘레이션이 보고하는 관절 순서는 `[joint2, joint4, joint6, joint1,
+joint3, joint5]`(실측, 임포터의 폭우선 순회)이고 정책 인덱스 순서는 §3의
+`[joint2, joint1, joint4, joint3, joint6, joint5]`다. 둘이 다르므로 `a2j` 인덱스
+텐서가 필수이며, `obs_layout.POLICY_JOINT_NAMES` 상수 하나에서만 나온다.
+
+### 9.4 종료 조건 — 접촉 센서 없이 전부 순수 함수
+
+루트 = 좌면 중심(§3)이므로 모서리 4개의 월드 z를 기하로 계산한다:
+
+```
+corner_local (4,3) = (±hx, ±hy, 0)                       # 좌면 반폭, 메시 bounds에서
+corner_z (N,4)     = (quat_rotate(root_quat, corner_local) + root_pos)[..., 2]
+ground             = corner_z.min(-1) < z_thresh
+```
+
+결정적이고, ContactSensor 설정·필터 문제가 없고, CPU에서 테스트된다. 네 조건(tilt·
+ground·height·max_episode)이 `mdp.walk_terminated()` 하나로 들어간다.
+
+### 9.5 Cfg와 등록
+
+```python
+@configclass
+class WalkEnvCfg(DirectRLEnvCfg):
+    sim = SimulationCfg(dt=1/120, render_interval=12)   # §2⑤: ≤ 0.008
+    decimation = 12                                     # → 10 Hz
+    episode_length_s = 35.0                             # → 350 스텝
+    observation_space = 40;  action_space = 6
+    scene = InteractiveSceneCfg(num_envs=4096, env_spacing=0.6)
+    robot = chair_asset.articulation_cfg(mass_spec=MUJOCO)   # /World/envs/env_.*/Robot
+    # 보상 가중치·리셋 임계값은 cfg 필드. 기본값 = Table III/IV
+```
+
+`gym.register("Chair-Walk-Direct-v0")`에 **rl_games와 rsl_rl cfg entry point를 둘 다**
+건다(`isaaclab_tasks`의 cartpole 관례). 뼈대는 라이브러리를 모르고, 선택(§8)은
+`train.py` 시점으로 미룬다.
+
+### 9.6 테스트
+
+| 테스트 | Isaac | 검증 내용 |
+|---|---|---|
+| `test_obs_layout.py` | 불필요 | `src/rl_walk.py`의 이력 갱신을 **그대로 import**해 100스텝 무작위 입력에 동일 출력 |
+| `test_mdp.py` | 불필요 | 직립→`up=1`, 90°→`up≈0`, 82°에서 tilt 경계, truncation≠termination, death는 terminated에만 |
+| `test_mass_spec.py` | 불필요 (mujoco) | 스펙 상수 = MuJoCo가 `chair.xml`에서 계산한 값. mujoco는 `lerobot` env에만 있으므로 스펙 갱신 시 수동 실행, CI 밖 |
+| `test_asset_build.py` | 필요 | 빌드된 USD 되읽기: 총질량 138.03 g, 바디별 질량·COM, 관절 6개·이름, 아티큘레이션 루트 1개 |
+| `test_env_smoke.py` | 필요 | 16 env × 50 스텝: obs `(16,40)` NaN 없음, 리셋 직후 obs 이력 = 규약값, `a2j`로 관절이 움직임 |
+
+Isaac 필요 테스트는 `pytest -m isaac`으로 분리한다.
+
+### 9.7 이슈 분할 (각 ≤ 400줄)
+
+| | 내용 | 규모 |
+|---|---|---|
+| A | `chair_asset.py` + `mass_spec.py` + 빌드 테스트. `chair_sim.py`가 이걸 import하도록 | M |
+| B | `obs_layout.py` + `mdp.py` + CPU 테스트 | M |
+| C | `base_env.py` + `walk_env.py` + 등록 + 스모크 | M |
+
+A는 C 없이도 가치가 있다 — `chair_sim.py`가 즉시 올바른 질량으로 재생한다.
+
 ## 열린 질문 / 확정 필요
 
 **열려 있는 것**
 
-1. **좌면 모서리 접지를 접촉력 임계값으로 근사**하는 것 — 승인 대기.
-2. **서보 STL** — 확보 시 경로 A/B. 미확보 시 점질량으로 진행. §2②에서 우선순위가
+1. **서보 STL** — 확보 시 경로 A/B. 미확보 시 점질량으로 진행. §2②에서 우선순위가
    1순위로 올라갔으므로, 점질량 근사로 충분한지를 §2 게이트로 판정해야 한다.
-3. **관성 텐서를 어디까지 옮길 것인가** — §2①. 질량만 MuJoCo 값으로 맞추고 관성은
-   질량비 스케일(Isaac Lab 기본 처리)로 갈지, `body_inertia`/`body_iquat`/`body_ipos`를
-   전부 옮길지. 볼록껍질 분포 오차가 bracket에서 3.2배라 후자가 옳아 보이나,
-   USD 임포트가 바디 프레임을 보존하는지 확인이 필요하다.
-4. **rsl_rl vs rl_games** — 섹션 8. `models/*.onnx`가 rl_games 산출물임이 확인됐다.
+2. **USD 임포트가 MJCF 바디 프레임을 보존하는가** — §9.2의 MassAPI 이식이 이것을
+   전제한다. 빌드 테스트의 `get_coms()` 되읽기로 판정.
+3. **rsl_rl vs rl_games** — 섹션 8. §9.5가 두 entry point를 동시에 등록하므로
+   `train.py` 시점까지 미룰 수 있다. `models/*.onnx`가 rl_games 산출물임이 확인됐다.
    현재 권고는 rsl_rl 유지 + 내보내기 어댑터.
-5. **`horizon_length` 미상** — 논문이 밝히지 않아 학습량 환산에 가정이 들어간다. 섹션 7.
+4. **`horizon_length` 미상** — 논문이 밝히지 않아 학습량 환산에 가정이 들어간다. 섹션 7.
 
 **닫힌 것 (2026-08-26, 논문 본문 재확인)**
 
@@ -728,7 +948,10 @@ roll/pitch/yaw, 서보 지령각 6개. 정성 비교("세 다리를 벌리고 �
 | 논문 미명시 상수(heading·vel·standing·spreading) | **전부 명시돼 있었다.** Table IV/VI 인용으로 §4 교체 |
 | 1차 과업 합격선 | 섹션 7에서 정의 (논문 정책을 **같은 시뮬 위에서** 돌린 값이 기준선) |
 | 마찰이 `addRise()` 실패의 원인 후보 1번 | **반증.** μ=0.02~3.0 × 질량 3조건에서 기립 0회 (§2④) |
-| 토크 부족이 기립 실패의 원인 | **반증.** 138 g에서 필요 토크 0.023 N·m, 한 자릿수 여유 (§2③) |
+| 토크 부족이 기립 실패의 원인 | **반증.** 138 g에서 필요 토크 0.023 N·m, 한 자릿수 여유 (§2③). 수직 웅크림에서 `SLEEPING→STANDING` 재생 시 좌면 z 0.061→0.101 m, 10/10 기립 — 서보는 몸통을 든다 |
+| 좌면 모서리 접지를 접촉력으로 근사 | **대체.** 루트 = 좌면 중심이므로 모서리 z를 기하로 계산 (§4, §9.4) |
+| 관성을 질량비 스케일로 근사 | **대체.** MuJoCo `body_inertia/iquat/ipos` → MassAPI `diagonalInertia/principalAxes/centerOfMass` 직접 이식 (§9.2) |
+| `chair` 바디가 좌면 기준 | **반증.** `dummy`(루트)가 좌면 중심이다 (§3) |
 
 **범위가 줄어든 것**
 
