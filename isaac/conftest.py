@@ -32,12 +32,23 @@ def pytest_collection_modifyitems(config, items):
 
 @pytest.fixture(scope="session")
 def kit_app(request):
-    """헤드리스 Kit. 세션 끝에 닫는다."""
+    """헤드리스 Kit. 세션 끝에 닫는다.
+
+    fast_shutdown(기본 True) 이면 close() 가 C++ 에서 exit 0 으로 프로세스를 끝내 pytest 가
+    실패를 보고하지 못한다(요약/junitxml 없음). 그래서 끈다.
+    graceful close 는 SimulationContext 의 timeline STOP 핸들러(`while not playing: render()`)
+    를 건드려 무한 루프에 빠질 수 있으므로, 남은 컨텍스트를 먼저 정리한다.
+    """
     if not request.config.getoption("--isaac"):
         pytest.skip("--isaac 옵션 없음")
     from isaaclab.app import AppLauncher
 
-    launcher = AppLauncher({"headless": True})
+    launcher = AppLauncher({"headless": True, "fast_shutdown": False})
     app = launcher.app
     yield app
+    from isaaclab.sim import SimulationContext
+
+    if SimulationContext.instance() is not None:
+        SimulationContext.instance().clear_all_callbacks()
+        SimulationContext.clear_instance()
     app.close()
