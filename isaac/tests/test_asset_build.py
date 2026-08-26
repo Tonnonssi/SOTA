@@ -44,6 +44,19 @@ def test_file_layer_mass_authored_and_single_root(kit_app, usd_path):
         # q 와 -q 는 같은 회전이다
         assert min(np.abs(got - want).max(), np.abs(got + want).max()) < 1e-6, name
 
+    # 프레임 보존: MuJoCo com 을 무변환으로 넣는 전제는 "바디 프림의 로컬 변환이 항등" 이다.
+    # get_coms() 되읽기는 authored 값의 왕복이라 이것을 증명하지 못한다 — 여기서 직접 본다.
+    from pxr import Gf, UsdGeom
+
+    for name in BODY_NAMES:
+        prim = stage.GetPrimAtPath(f"{base}/dummy/{name}")
+        xf = UsdGeom.Xformable(prim).GetLocalTransformation()
+        if name == ROOT_BODY:
+            # dummy 만 MJCF 의 freejoint 위치(좌면 중심)에 놓인다: mjcf/chair.xml <body name="dummy" pos=…>
+            np.testing.assert_allclose(list(xf.ExtractTranslation()), (0.095, 0.0785, 0.10365), atol=1e-6)
+        else:
+            assert Gf.IsClose(xf, Gf.Matrix4d(1.0), 1e-6), f"{name} 의 로컬 변환이 항등이 아님: {xf}"
+
 
 def test_cache_hit_returns_same_path(kit_app, usd_path):
     from chair_rl import chair_asset
@@ -59,21 +72,25 @@ def test_physics_layer_masses_and_coms(kit_app, usd_path):
     from chair_rl import chair_asset
 
     sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=1.0 / 120.0, device="cpu"))
-    robot = Articulation(chair_asset.articulation_cfg(usd_path))
-    sim.reset()
+    try:
+        robot = Articulation(chair_asset.articulation_cfg(usd_path))
+        sim.reset()
 
-    assert sorted(robot.joint_names) == ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"]
-    assert set(robot.body_names) == set(BODY_NAMES)
-    assert robot.body_names[0] == ROOT_BODY
+        assert sorted(robot.joint_names) == ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"]
+        assert set(robot.body_names) == set(BODY_NAMES)
+        assert robot.body_names[0] == ROOT_BODY
 
-    masses = robot.root_physx_view.get_masses()[0].cpu().numpy()
-    assert masses.sum() == pytest.approx(MUJOCO.total_mass(), abs=1e-5)
-    for i, name in enumerate(robot.body_names):
-        assert masses[i] == pytest.approx(MUJOCO.bodies[name].mass, rel=1e-4), name
+        masses = robot.root_physx_view.get_masses()[0].cpu().numpy()
+        assert masses.sum() == pytest.approx(MUJOCO.total_mass(), abs=1e-5)
+        for i, name in enumerate(robot.body_names):
+            assert masses[i] == pytest.approx(MUJOCO.bodies[name].mass, rel=1e-4), name
 
-    # COM 은 바디(프림) 프레임. 스펙 com 과 같으면 프레임이 보존된 것이다.
-    coms = robot.root_physx_view.get_coms()[0].cpu().numpy()   # (bodies, 7): xyz + quat
-    for i, name in enumerate(robot.body_names):
-        if name == ROOT_BODY:
-            continue
-        np.testing.assert_allclose(coms[i, :3], MUJOCO.bodies[name].com, atol=1e-4, err_msg=name)
+        # COM 은 바디(프림) 프레임. 스펙 com 과 같으면 프레임이 보존된 것이다.
+        coms = robot.root_physx_view.get_coms()[0].cpu().numpy()   # (bodies, 7): xyz + quat
+        for i, name in enumerate(robot.body_names):
+            if name == ROOT_BODY:
+                continue
+            np.testing.assert_allclose(coms[i, :3], MUJOCO.bodies[name].com, atol=1e-4, err_msg=name)
+    finally:
+        sim.clear_all_callbacks()
+        sim.clear_instance()

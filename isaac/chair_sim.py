@@ -196,6 +196,9 @@ def main() -> None:
     masses = robot.root_physx_view.get_masses()[0].cpu().numpy()
     info("masses (g): " + ", ".join(f"{n}={m*1000:.2f}" for n, m in zip(robot.body_names, masses))
          + f"  | total={masses.sum()*1000:.2f}")
+    coms = robot.root_physx_view.get_coms()[0, :, :3].cpu().numpy()
+    info("coms (m, body frame): " + ", ".join(
+        f"{n}=({c[0]:+.4f},{c[1]:+.4f},{c[2]:+.4f})" for n, c in zip(robot.body_names, coms)))
 
     if args.inspect:
         simulation_app.close()

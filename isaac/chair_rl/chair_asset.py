@@ -12,6 +12,7 @@ Isaac import 는 함수 안에 둔다 — prepare_mjcf() 는 Kit 없이 돌고 �
 
 from __future__ import annotations
 
+import hashlib
 import os
 import xml.etree.ElementTree as ET
 
@@ -55,15 +56,32 @@ def _usd_dir(spec: MassSpec) -> str:
     return os.path.join(USD_ROOT, spec.spec_hash())
 
 
+def _mjcf_hash() -> str:
+    """원본 MJCF 바이트의 해시. 메시 파일은 포함하지 않는다(알려진 한계)."""
+    with open(MJCF_SRC, "rb") as f:
+        return hashlib.sha1(f.read()).hexdigest()[:8]
+
+
+def _cache_key(spec: MassSpec) -> str:
+    return f"{spec.spec_hash()} {_mjcf_hash()}"
+
+
 def build_usd(spec: MassSpec = MUJOCO, force: bool = False) -> str:
-    """MJCF -> USD 빌드(캐시) 후 경로를 돌려준다. Kit 기동 이후에만 부를 수 있다."""
+    """MJCF -> USD 빌드(캐시) 후 경로를 돌려준다. Kit 기동 이후에만 부를 수 있다.
+
+    캐시 키 = 질량 스펙 해시 + MJCF 원본 해시. 마크는 후처리가 끝난 뒤 마지막에 쓰고,
+    재빌드 전에 지운다 — 실패한 빌드가 캐시 히트로 둔갑하지 않도록.
+    """
     usd_dir = _usd_dir(spec)
     usd_path = os.path.join(usd_dir, USD_FILE)
     mark = os.path.join(usd_dir, POSTPROCESS_MARK)
     if not force and os.path.isfile(usd_path) and os.path.isfile(mark):
         with open(mark) as f:
-            if f.read().strip() == spec.spec_hash():
+            if f.read().strip() == _cache_key(spec):
                 return usd_path
+
+    if os.path.isfile(mark):
+        os.remove(mark)
 
     from isaaclab.sim.converters import MjcfConverter, MjcfConverterCfg
     from isaacsim.core.utils.extensions import enable_extension
@@ -85,7 +103,7 @@ def build_usd(spec: MassSpec = MUJOCO, force: bool = False) -> str:
     converter = MjcfConverter(cfg)
     postprocess_usd(converter.usd_path, spec)
     with open(mark, "w") as f:
-        f.write(spec.spec_hash())
+        f.write(_cache_key(spec))
     return converter.usd_path
 
 
