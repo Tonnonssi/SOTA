@@ -23,6 +23,11 @@
 - Isaac 모듈은 `AppLauncher` 기동 **뒤에만** import 가능. Kit은 프로세스당 한 번만 뜬다.
 - 커밋 메시지는 레포 관례 `feat[isaac]: …` / `test[isaac]: …`, 끝에 `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`.
 - 실행 파이썬: Isaac 관련은 `~/miniforge3/envs/env_isaaclab/bin/python`, MuJoCo 비교 테스트만 `~/miniforge3/envs/lerobot/bin/python`.
+- **모든 `python`/`pytest` 실행은 `env -u PYTHONPATH` 를 앞에 붙인다.** 이 머신은 셸이 ROS humble을
+  sourced해 `PYTHONPATH=/opt/ros/humble/lib/python3.10/site-packages:…` 가 박혀 있고, 그 안의
+  `launch_testing` 이 pytest 플러그인으로 로드되며 `lark` 부재로 수집 단계에서 죽는다
+  (`ModuleNotFoundError: No module named 'lark'`). 아래 명령들은 이 접두사를 생략해 적었다 —
+  실행할 때 반드시 붙일 것. 예: `env -u PYTHONPATH ~/miniforge3/envs/env_isaaclab/bin/python -m pytest …`
 
 ## 선행조건 (계획 시작 전 사람이 확인)
 
