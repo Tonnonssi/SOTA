@@ -55,6 +55,11 @@ parser.add_argument(
 )
 parser.add_argument("--spawn-height", type=float, default=0.12, help="초기 스폰 높이 (m)")
 parser.add_argument("--force-convert", action="store_true", help="USD 캐시 무시하고 재변환")
+parser.add_argument(
+    "--servo-mass",
+    action="store_true",
+    help="MJCF 에 빠진 SG90 6개(54 g)를 점질량으로 더한 모델을 쓴다 (설계문서 §2②)",
+)
 parser.add_argument("--inspect", action="store_true", help="관절 이름/순서를 출력하고 종료")
 parser.add_argument("--no-ground", action="store_true", help="바닥 평면을 추가하지 않음")
 parser.add_argument(
@@ -84,10 +89,10 @@ import numpy as np  # noqa: E402
 import torch  # noqa: E402
 
 import isaaclab.sim as sim_utils  # noqa: E402
-from pxr import Usd  # noqa: E402
-from isaaclab.actuators import ImplicitActuatorCfg  # noqa: E402
-from isaaclab.assets import Articulation, ArticulationCfg  # noqa: E402
-from isaaclab.sim.converters import MjcfConverter, MjcfConverterCfg  # noqa: E402
+from isaaclab.assets import Articulation  # noqa: E402
+
+from chair_rl import chair_asset  # noqa: E402
+from chair_rl.mass_spec import MUJOCO  # noqa: E402
 
 # MJCF의 관절 정의 순서(= 바디 트리 순회 순서). Isaac Gym이 이 MJCF를 읽을 때의
 # DOF 순서와 같으므로, Isaac Gym에서 학습된 정책의 출력 순서로 이것을 기본값으로 둔다.
@@ -155,67 +160,6 @@ class OnnxPolicy:
         return action[0]
 
 
-def prepare_mjcf() -> str:
-    """로봇만 남긴 MJCF를 만들어 그 경로를 돌려준다.
-
-    원본 chair.xml의 <worldbody>에는 바닥 평면(geom name="floor")과 조명이 들어 있다.
-    그대로 임포트하면 두 가지 문제가 생긴다:
-      1. worldBody가 별도의 아티큘레이션 루트가 되어 Isaac Lab이 '/World/Robot' 아래에서
-         아티큘레이션을 하나로 특정하지 못하고 RuntimeError를 낸다.
-      2. 바닥이 로봇 USD 안에 들어가 있어서 로봇 스폰 변환(z=spawn_height)을 같이 받아
-         공중에 뜬 바닥이 된다.
-    바닥과 조명은 Isaac 쪽에서 따로 만들므로 여기서 제거한다.
-
-    메쉬 경로가 './mesh/...' 상대 경로라 원본과 같은 디렉터리에 써야 해석된다.
-    """
-    import xml.etree.ElementTree as ET
-
-    src = os.path.join(REPO, "mjcf", "chair.xml")
-    if not os.path.isfile(src):
-        raise FileNotFoundError(src)
-    dst = os.path.join(REPO, "mjcf", "chair_isaac.xml")
-
-    tree = ET.parse(src)
-    root = tree.getroot()
-    worldbody = root.find("worldbody")
-    removed = []
-    for child in list(worldbody):
-        if child.tag == "light":
-            worldbody.remove(child)
-            removed.append("light")
-        elif child.tag == "geom" and child.get("name") == "floor":
-            worldbody.remove(child)
-            removed.append("geom:floor")
-    tree.write(dst, encoding="utf-8", xml_declaration=False)
-    info(f"MJCF 전처리: {os.path.basename(dst)} (제거: {removed})")
-    return dst
-
-
-def convert_mjcf() -> str:
-    """MJCF -> USD. 이미 변환돼 있으면 캐시를 쓴다."""
-    mjcf_path = prepare_mjcf()
-
-    # MJCF 임포터는 isaaclab의 kit 앱에 기본 활성화돼 있지 않다. 켜지 않으면
-    # MjcfConverter가 "Can't execute command: MJCFCreateImportConfig" 로 죽는다.
-    from isaacsim.core.utils.extensions import enable_extension
-
-    enable_extension("isaacsim.asset.importer.mjcf")
-
-    cfg = MjcfConverterCfg(
-        asset_path=mjcf_path,
-        usd_dir=os.path.join(REPO, "isaac", "usd"),
-        usd_file_name="chair_isaac.usd",
-        fix_base=False,  # MJCF의 freejoint = 떠 있는 베이스
-        make_instanceable=False,
-        import_sites=True,
-        self_collision=False,
-        force_usd_conversion=args.force_convert,
-    )
-    converter = MjcfConverter(cfg)
-    info(f"USD: {converter.usd_path}")
-    return converter.usd_path
-
-
 def _initial_joint_pos() -> dict[str, float]:
     """초기 관절 각도를 {관절이름: rad} 로 만든다."""
     if args.init_pose == "zero":
@@ -224,59 +168,10 @@ def _initial_joint_pos() -> dict[str, float]:
     return {name: STANDING_SIM[i] for i, name in enumerate(order)}
 
 
-def build_robot_cfg(usd_path: str) -> ArticulationCfg:
-    # MJCF actuator: position, kp=40, forcerange +-0.3 / joint damping .010, armature .001
-    return ArticulationCfg(
-        prim_path="/World/Robot",
-        spawn=sim_utils.UsdFileCfg(
-            usd_path=usd_path,
-            articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-                enabled_self_collisions=False,
-                solver_position_iteration_count=8,
-                solver_velocity_iteration_count=1,
-            ),
-        ),
-        init_state=ArticulationCfg.InitialStateCfg(
-            pos=(0.0, 0.0, args.spawn_height),
-            joint_pos=_initial_joint_pos(),
-        ),
-        actuators={
-            "servos": ImplicitActuatorCfg(
-                joint_names_expr=["joint[1-6]"],
-                stiffness=40.0,
-                damping=0.01,
-                armature=0.001,
-                effort_limit_sim=0.3,
-            )
-        },
-    )
-
-
-def _strip_extra_articulation_roots(root_path: str, keep: str) -> None:
-    """`keep` 이외의 프림에서 ArticulationRootAPI를 떼어낸다.
-
-    MJCF 임포터가 worldBody에도 아티큘레이션 루트를 붙이는 경우가 있어, MJCF 전처리로
-    막지 못한 경우를 대비한 안전장치다.
-    """
-    import isaacsim.core.utils.stage as stage_utils
-    from pxr import PhysxSchema, UsdPhysics
-
-    stage = stage_utils.get_current_stage()
-    root_prim = stage.GetPrimAtPath(root_path)
-    if not root_prim.IsValid():
-        return
-    for prim in Usd.PrimRange(root_prim):
-        path = str(prim.GetPath())
-        if path == keep:
-            continue
-        if prim.HasAPI(UsdPhysics.ArticulationRootAPI):
-            prim.RemoveAPI(UsdPhysics.ArticulationRootAPI)
-            prim.RemoveAPI(PhysxSchema.PhysxArticulationAPI)
-            info(f"여분 아티큘레이션 루트 제거: {path}")
-
-
 def main() -> None:
-    usd_path = convert_mjcf()
+    spec = MUJOCO.with_servos() if args.servo_mass else MUJOCO
+    usd_path = chair_asset.build_usd(spec, force=args.force_convert)
+    info(f"USD: {usd_path}  (mass spec {spec.spec_hash()}, servo_mass={spec.servo_mass})")
 
     sim = sim_utils.SimulationContext(
         sim_utils.SimulationCfg(dt=1.0 / 120.0, device=args.device)
@@ -289,12 +184,18 @@ def main() -> None:
     light = sim_utils.DomeLightCfg(intensity=2500.0, color=(0.9, 0.9, 0.92))
     light.func("/World/light", light)
 
-    robot = Articulation(build_robot_cfg(usd_path))
-    _strip_extra_articulation_roots("/World/Robot", keep="/World/Robot/dummy/dummy")
+    robot = Articulation(
+        chair_asset.articulation_cfg(
+            usd_path, spawn_height=args.spawn_height, joint_pos=_initial_joint_pos()
+        )
+    )
     sim.reset()
 
     info(f"articulation joints ({robot.num_joints}): {robot.joint_names}")
     info(f"bodies ({robot.num_bodies}): {robot.body_names}")
+    masses = robot.root_physx_view.get_masses()[0].cpu().numpy()
+    info("masses (g): " + ", ".join(f"{n}={m*1000:.2f}" for n, m in zip(robot.body_names, masses))
+         + f"  | total={masses.sum()*1000:.2f}")
 
     if args.inspect:
         simulation_app.close()
