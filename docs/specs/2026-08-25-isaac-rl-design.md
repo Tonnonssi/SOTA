@@ -1,6 +1,7 @@
 # Isaac Sim 상에서 걷기·일어서기 정책 학습 — 설계
 
-작성 2026-08-25. 상태: **섹션 1~4 확정, 섹션 5~8 미작성.**
+작성 2026-08-25. 갱신 2026-08-26.
+상태: **섹션 1~4 확정(§4는 논문 표 실값으로 정정됨), 섹션 5~8 미작성.**
 
 ## 목표
 
@@ -309,13 +310,16 @@ decimation 12).
 
 | 논문 term | 구현 | 비고 |
 |---|---|---|
-| progress 30 | Ant 관례: `potential = −‖target − p‖/dt`, 보상 = `potential − potential_pre` | target은 +x 방향 먼 점. `src/utils.py`가 Ant `torch_jit_utils` 사본이라 이 관례가 맞다 |
+| progress 30 | `P = −‖p_target − p‖ / dt`, 보상 = `P − P_pre` | **`p_target = [10, 0, 0] m`** — 논문 명시. Ant `torch_jit_utils` 관례와 같다 |
 | height 20 | `min(1, p_z / 0.08)` | 8 cm 이상 만점 |
-| up 5 | `min(1, u_prj / 0.93)` | `u_prj`는 `src/utils.py`의 `compute_up_proj`와 동일 정의. 음수면 보상도 음수 |
-| heading 2 | Ant 관례: `heading_proj` 정규화 후 클립 | **논문에 정규화 상수 없음** → Ant의 `/0.8` 채택 |
+| up 5 | `min(1, u_prj / 0.93)` | `u_prj = \|R_q e_z\|_z`. `src/utils.py`의 `compute_up_proj`와 동일 정의. 음수면 보상도 음수 |
+| heading 2 | `min{1, (1/0.8)·R_q e_x · (p_target−p)/‖p_target−p‖}` | 논문 명시. `/0.8`은 Ant 관례와 **같은 값**이었다 |
 | alive 1 / death −1 | 상수 / 종료 시 | |
 | action −2 | `‖a − a_pre‖²` | 크기가 아니라 **변화량** 페널티 |
-| vel −2 | `‖q̇‖²` | **논문에 형태 없음** → L2 채택 |
+| vel −2 | `‖ω / (ω_max − ω_tol)‖²`, `ω_max = 10.472`, `ω_tol = 1` | 논문 명시. 단순 L2가 아니라 **정규화된** L2다. `10.472 rad/s = 600 °/s` ≈ SG90 무부하 속도 |
+
+> 2026-08-26 정정: heading·vel·progress 세 항목은 "논문 미명시"로 적혀 있었으나 본문
+> Table IV에 전부 수식으로 실려 있다. 위 표가 인용값이다.
 
 ### walk 종료
 
@@ -332,16 +336,39 @@ decimation 12).
 
 | 논문 term | 구현 |
 |---|---|
-| up 250 | `u_prj` |
-| standing 100 | **공식 미명시** → `exp(−‖θ − θ_stand‖²/σ)`. `θ_stand`는 `keyframes.py`의 `STANDING_POS` 변환값 |
-| spreading 50 | **공식 미명시** → `a_expand` 기준 근접도. `a_expand`는 `EXTENTION_POS` 변환값으로 **추론** |
+| up 250 | `min{1, exp{2(u_prj − 1)}}` — **`u_prj` 자체가 아니다.** 직립 근방에서만 급히 커지는 지수형 |
+| standing 100 | `1 / (2·\|arcsin(min{1, ‖a − a_stand‖/4})\| + 0.1)` (단 `u_prj > 0.85`, 아니면 0)<br>`a_stand = [−0.1745, 0, −0.1745, 0, 0.1745, 0]` |
+| spreading 50 | `1 / (2·\|arcsin(min{1, ‖[θ₀,θ₁,θ₃,θ₅] − a_expand‖/4})\| + 0.1)` (단 `u_prj > 0.2`, 아니면 0)<br>`a_expand = [−1, −1, 1, −1]` |
 | death −1, action −2 | walk과 동일 |
+
+> 2026-08-26 정정: standing/spreading은 "공식 미명시"가 아니라 논문 Table VI에 실려 있다.
+> **`a_expand`는 `EXTENTION_POS` 변환값이 아니라 `[−1, −1, 1, −1]` 리터럴이다** — 이전
+> 추론은 폐기한다.
+
+**세 가지 구현상 함의.**
+
+1. **`a_stand`가 `keyframes.py`의 `STANDING_SIM`과 소수점까지 일치한다.**
+   `[−0.1745, 0, −0.1745, 0, 0.1745, 0]` — 실기 `config.py`의 `STANDING_POS`를
+   `simRad2realDeg()` 역변환한 값 그대로다. 논문의 액션 인덱스 규약이 이 레포의 변환과
+   같다는 **독립 증거**이고, MJCF 트리 순회 순서(`JOINT_ORDERS["tree"]`)를 지지한다.
+   섹션 3의 미해결 항목이 여기서 절반 닫힌다.
+
+2. **`a_expand`는 관절 한계 밖이다.** `|±1| > 0.872665`이므로 도달 불가능한 목표다.
+   즉 spreading 보상은 "다리를 한계까지 벌려라"로 작동한다. 최댓값에 못 닿는 것이
+   버그가 아니라 설계다.
+
+3. **보상 규모가 크게 비대칭이다.** arcsin 역수식은 `‖·‖ = 0`에서 `1/0.1 = 10`,
+   `‖·‖ ≥ 4`에서 `1/(π + 0.1) ≈ 0.307`이다. 가중치를 곱하면 스텝당 최대
+   standing 1000 / spreading 500 / up 250. **standing이 지배항**이고, `u_prj > 0.85`
+   게이트가 켜지기 전에는 0이다. 이 계단이 학습 곡선에 그대로 보일 것이다 —
+   term별 로깅(`extras["log"]`)이 여기서 필수다.
 
 종료: 350 스텝(truncation) / flip `u_prj < −0.7` /
 fold `0.6 < u_prj 이고 max‖[θ₀,θ₁,θ₃,θ₅] − a_expand‖_∞ > 1`.
 
-**`keyframes.py`가 여기서 재사용된다.** `θ_stand`와 `a_expand`가 이미 만들어 둔 실기
-키프레임 변환값이라, 학습 목표 자세와 실기 자세가 정의상 일치한다.
+**`keyframes.py`가 여기서 재사용된다.** `a_stand`가 `keyframes.py`의 `STANDING_SIM`과
+같으므로 학습 목표 자세와 실기 자세가 정의상 일치한다. 다만 `a_expand`는 키프레임에서
+오지 않는 별도 리터럴이므로 `mdp.py`에 상수로 못 박는다.
 
 **성공 종료는 논문에 없다.** 학습 중엔 넣지 않고(보상으로 유도), 평가 하네스에서만
 `u_prj > 0.95`(실기 FSM 임계값)를 성공 판정으로 쓴다. 학습 신호와 평가 지표를 분리해야
@@ -364,18 +391,35 @@ fold `0.6 < u_prj 이고 max‖[θ₀,θ₁,θ₃,θ₅] − a_expand‖_∞ > 1
 
 ## 열린 질문 / 확정 필요
 
+**열려 있는 것**
+
 1. **좌면 모서리 접지를 접촉력 임계값으로 근사**하는 것 — 승인 대기.
-2. **`a_expand = EXTENTION_POS` 추론** — fold 조건의 의미("거의 섰는데 다리가 안 펴짐")에서
-   역추론한 것이라 확정 아님.
-3. **정책 출력 ↔ 물리 서보 대응** — 실기 이식 전 실측 필요.
-4. **서보 STL** — 확보 시 경로 A/B. 미확보 시 점질량으로 진행.
-5. **논문 미명시 상수** — heading 정규화, vel 페널티 형태, standing/spreading 공식.
-   섹션 7의 스윕 대상.
-6. **1차 과업 합격선** — 논문에 성능 수치가 없으므로 우리가 정의해야 한다.
+2. **서보 STL** — 확보 시 경로 A/B. 미확보 시 점질량으로 진행.
+3. **rsl_rl vs rl_games** — 섹션 8. `models/*.onnx`가 rl_games 산출물임이 확인됐다.
+   현재 권고는 rsl_rl 유지 + 내보내기 어댑터.
+4. **`horizon_length` 미상** — 논문이 밝히지 않아 학습량 환산에 가정이 들어간다. 섹션 7.
+
+**닫힌 것 (2026-08-26, 논문 본문 재확인)**
+
+| 이전 항목 | 결과 |
+|---|---|
+| `a_expand = EXTENTION_POS` 추론 | **반증.** Table VI에 `[−1, −1, 1, −1]` 리터럴로 명시 |
+| 논문 미명시 상수(heading·vel·standing·spreading) | **전부 명시돼 있었다.** Table IV/VI 인용으로 §4 교체 |
+| 1차 과업 합격선 | 섹션 7에서 정의 (논문 정책을 **같은 시뮬 위에서** 돌린 값이 기준선) |
+
+**범위가 줄어든 것**
+
+- **정책 출력 ↔ 물리 서보 대응.** `a_stand ≡ STANDING_SIM` 일치로 *액션 인덱스 규약*은
+  확정됐고 `JOINT_ORDERS["tree"]`가 유력하다. 남은 것은 *실기 서보 번호 ↔ 관절 이름*
+  대응뿐이며, 이것만 실기 이식 전 실측이 필요하다.
 
 ## 근거
 
-- 논문: arXiv 2404.05932 본문 ("논문에서 확정된 사실"의 표는 본문에서 직접 인용).
+- 논문: arXiv 2404.05932 본문. §4의 보상·종료 수식은 Table III~VI 직접 인용
+  (2026-08-26 PDF 본문 재확인).
+- `models/{walk,stand}.onnx` 그래프 실측: 입력 `obs [1,40]`, 출력 `mu`/`log_std`/`value`,
+  초기화자 `model._model.a2c_network.actor_mlp.{0,2}` = **[1024, 512] ELU**,
+  상태무관 `sigma [6]`, 선두에 `Sub`/`Div`/`Clip`(RunningMeanStd 융합) — rl_games 산출물.
 - 코드: `src/rl_walk.py`(관측 구성·좌표 변환), `src/rl_stand.py`(FSM 임계값),
   `src/utils.py`(`compute_up_proj`), `src/config.py`(키프레임), `mjcf/chair.xml`.
 - Isaac Lab 0.54.4 소스: `direct_rl_env.py:151`(events),
