@@ -98,7 +98,8 @@ def test_rl_walk_source_still_matches_reference():
     """참조 구현은 src/rl_walk.py 의 세 줄을 옮긴 것이다. 원문이 바뀌면 여기서 걸린다."""
     import os
     repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    src = open(os.path.join(repo, "src", "rl_walk.py"), encoding="utf-8").read()
+    with open(os.path.join(repo, "src", "rl_walk.py"), encoding="utf-8") as f:
+        src = f.read()
     for needle in (
         "rotation_history[:,  3] = 1.0",
         "action_history = np.ones([numActionHis, 6])",
