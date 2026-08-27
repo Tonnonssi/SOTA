@@ -21,6 +21,8 @@ UP_REF = 0.93                 # up = min{1, u_prj / 0.93}
 HEADING_REF = 0.8             # heading = min{1, (R_q e_x · dir) / 0.8}
 OMEGA_MAX = 10.472            # rad/s (= 600 deg/s)
 OMEGA_TOL = 1.0
+CONTROL_DT = 0.1          # 논문 dt: 제어 주기. progress 의 potentials 초기화와 스텝이 같은 값을 써야 한다
+MAX_EPISODE_LEN = 350     # 논문 Table III "episode exceeds 350"
 
 
 # ---------------------------------------------------------------- 회전 헬퍼 (xyzw)
@@ -49,13 +51,13 @@ def heading_proj(q: torch.Tensor, root_pos: torch.Tensor, p_target: torch.Tensor
 
 # ---------------------------------------------------------------- 보상 항 (가중치 미적용)
 
-def potential(root_pos: torch.Tensor, p_target: torch.Tensor, dt: float) -> torch.Tensor:
+def potential(root_pos: torch.Tensor, p_target: torch.Tensor, dt: float = CONTROL_DT) -> torch.Tensor:
     """P = -||p_target - p|| / dt."""
     return -(p_target - root_pos).norm(dim=-1) / dt
 
 
 def progress(potentials: torch.Tensor, root_pos: torch.Tensor,
-             p_target: torch.Tensor, dt: float) -> tuple[torch.Tensor, torch.Tensor]:
+             p_target: torch.Tensor, dt: float = CONTROL_DT) -> tuple[torch.Tensor, torch.Tensor]:
     """P - P_pre. (보상, 새 potentials). env 가 potentials 를 들고 리셋 때 재초기화한다."""
     new = potential(root_pos, p_target, dt)
     return new - potentials, new
@@ -96,9 +98,12 @@ class WalkRewardWeights:
     vel: float = -2.0
 
 
-def walk_reward_terms(root_pos, root_quat, potentials, actions, prev_actions, joint_vel,
-                      dt: float, p_target: torch.Tensor):
+def walk_reward_terms(root_pos: torch.Tensor, root_quat: torch.Tensor, potentials: torch.Tensor,
+                      actions: torch.Tensor, prev_actions: torch.Tensor, joint_vel: torch.Tensor,
+                      dt: float = CONTROL_DT, p_target: torch.Tensor | None = None):
     """6개 항(가중치 미적용)과 새 potentials. alive/death 는 walk_total 이 처리한다."""
+    if p_target is None:
+        p_target = torch.tensor(P_TARGET, dtype=root_pos.dtype, device=root_pos.device)
     prog, new_pot = progress(potentials, root_pos, p_target, dt)
     terms = {
         "progress": prog,
@@ -147,8 +152,7 @@ def seat_corner_heights(root_pos: torch.Tensor, root_quat: torch.Tensor,
 
 def quat_dist_to_identity(q: torch.Tensor) -> torch.Tensor:
     """||q - [0,0,0,1]||. q 와 -q 는 같은 회전이므로 w >= 0 으로 맞춘 뒤 잰다."""
-    sign = torch.where(q[:, 3:4] < 0, -1.0, 1.0)
-    qc = q * sign
+    qc = torch.where(q[:, 3:4] < 0, -q, q)
     ident = torch.tensor([0.0, 0.0, 0.0, 1.0], dtype=q.dtype, device=q.device)
     return (qc - ident).norm(dim=-1)
 
@@ -164,6 +168,10 @@ def walk_terminated(root_pos: torch.Tensor, root_quat: torch.Tensor):
     return terminated, reasons
 
 
-def walk_truncated(episode_len: torch.Tensor, max_len: int) -> torch.Tensor:
-    """350 스텝 초과는 실패가 아니라 시간 초과다 — terminated 와 섞지 않는다 (§4)."""
+def walk_truncated(episode_len: torch.Tensor, max_len: int = MAX_EPISODE_LEN) -> torch.Tensor:
+    """350 스텝 초과는 실패가 아니라 시간 초과다 — terminated 와 섞지 않는다 (§4).
+
+    episode_len 은 Isaac Lab 의 episode_length_buf (스텝 뒤 증가된 값). >= 350 이면
+    정확히 350 스텝이다 — Isaac Lab 번들 env 의 max_episode_length - 1 관례(349 스텝)를
+    따르지 않는다."""
     return episode_len >= max_len

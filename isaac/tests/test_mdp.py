@@ -152,9 +152,10 @@ def test_walk_terminated_reasons():
     # ground: 좌면이 수직이고 중심이 낮음
     term, why = mdp.walk_terminated(torch.tensor([[0., 0., 0.06]], dtype=torch.float64), quat_xyzw([1, 0, 0], 90)[None])
     assert term.item() is True and why["ground"].item() is True
-    # height: 좌면 중심이 5 mm 아래
-    term, why = mdp.walk_terminated(torch.tensor([[0., 0., 0.004]], dtype=torch.float64), IDENT[None])
-    assert term.item() is True and why["height"].item() is True
+    # height: 좌면 중심이 5 mm 아래. 바닥면 꼭짓점(z=-0.011)이 있어 직립이면 ground 도 같이 참이므로,
+    # 뒤집힌 자세(꼭짓점이 위로 +0.011)로 격리한다. tilt 는 180° 라 당연히 참.
+    term, why = mdp.walk_terminated(torch.tensor([[0., 0., 0.004]], dtype=torch.float64), quat_xyzw([1, 0, 0], 180)[None])
+    assert term.item() is True and why["height"].item() is True and why["ground"].item() is False
     assert set(why) == {"tilt", "ground", "height"}
 
 
@@ -171,3 +172,15 @@ def test_seat_corners_accepts_tensor_override():
     corners = torch.tensor(mdp.SEAT_CORNERS_LOCAL, dtype=torch.float64)   # Tensor 인자도 받아야 한다
     z = mdp.seat_corner_heights(center, IDENT[None], corners)
     torch.testing.assert_close(z, torch.full((1, 4), 0.10365 - 0.011, dtype=torch.float64))
+
+
+def test_defaults_are_paper_constants():
+    assert mdp.CONTROL_DT == 0.1 and mdp.MAX_EPISODE_LEN == 350
+    pos = torch.tensor([[0., 0., 0.1]], dtype=torch.float64)
+    tgt = torch.tensor(mdp.P_TARGET, dtype=torch.float64)
+    assert mdp.potential(pos, tgt).item() == pytest.approx(mdp.potential(pos, tgt, 0.1).item())
+    torch.testing.assert_close(mdp.walk_truncated(torch.tensor([349, 350])), torch.tensor([False, True]))
+    terms, _ = mdp.walk_reward_terms(pos, IDENT[None], mdp.potential(pos, tgt),
+                                     torch.zeros(1, 6, dtype=torch.float64), torch.zeros(1, 6, dtype=torch.float64),
+                                     torch.zeros(1, 6, dtype=torch.float64))
+    assert terms["progress"].item() == pytest.approx(0.0)
