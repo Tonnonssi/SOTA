@@ -90,9 +90,15 @@ adjusting the reward's content or weight. The reset conditions effectively narro
 
 | 정책 | 생존 | x 변위 | z | 보상/스텝 | 내역 |
 |---|---|---|---|---|---|
-| `a_stand` 고정 | 64/64 | 0 | 0.080 | **27.96** | h 20 + up 5 + hd 2 + alive 1 − act 0.04 |
+| `a_stand` 고정 | 64/64 | 0 | **0.101** | **27.96** | h 20 + up 5 + hd 2 + alive 1 − act 0.04 |
 | model_1499 (웅크림) | 64/64 | +0.001 | 0.048 | **19.81** | h 11.9 + up 5 + hd 2 + alive 1 − act 0.08 |
 | `walk.onnx` 6조합 (§7) | 0/64 | — | 0.075–0.079 | 11.5–19.4 | act −6.4~−15.1, vel −1.1~−1.8 |
+
+> **2026-08-28 정정.** `a_stand` 행의 z 를 처음에 0.080 으로 적었다. 이 표의 z 열은 `height_reward ×
+> HEIGHT_REF` 로 역산한 값인데, `height_reward = min(1, z/0.08)` 는 z ≥ 0.08 에서 1.0 으로 포화한다 —
+> 실제 0.101 이 잘려 0.080 으로 나온 것이다. 좌면을 직접 재면 0.1011 이고 `WalkEnvCfg.init_height =
+> 0.101`(§3 실측)과 일치한다. **나머지 두 행은 포화점 아래라 영향이 없다.** 이슈 #18 의 평가 하네스
+> (`chair_rl/evaluate.py`)는 `p[:, 2]` 를 직접 재므로 이 유도를 쓰지 않는다.
 
 ## 4. 진단 2 — 관절 한계 클립이 탐색을 지운다 (Ant 와의 결정적 차이)
 
