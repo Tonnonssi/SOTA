@@ -448,6 +448,12 @@ env의 `_get_observations`도 같은 순서여야 한다.
 `root_quat_w`(w,x,y,z)를 (x,y,z,w)로 재배열해 그대로 쓴다. `obs_layout.py`에 이 계약을
 함수로 두고 테스트한다.
 
+**타이밍 지연 (2026-08-27 기록).** 실기는 a_t 를 publish 한 직후 IMU 를 읽으므로 이력의
+index 0 은 (a_t, a_t 작용 전 쿼터니언) 쌍이고, commands 큐(초기 SLEEPING/STANDING 2행 +
+append/pop) 때문에 서보는 a_t 를 두 주기 뒤에 실행한다. env 는 (a_t, a_t 가 0.1 s 작용한
+뒤 쿼터니언) 쌍이다. 한 주기 + 서보 두 주기의 차이는 학습 환경에서 고치지 않았고, 이슈
+C(어느 쿼터니언을 짝지을지)와 §6(액션 지연 DR)에서 결정한다.
+
 ### 위치·자세의 기준 바디
 
 논문의 `p`(좌면 중심)와 `u_prj`(직립도)는 **루트 바디(`dummy`)** 기준이다.
@@ -844,19 +850,28 @@ USD에 구우면 둘 다 공짜로 맞는다.
 `DirectRLEnv.step()`의 실제 호출 순서(소스 확인)에 훅을 맞춘다. 순서가 곧 정확성이다.
 
 ```
-_pre_physics_step(a)   a: (N,6) 정책 출력 → clip ±0.8727 → self._act  (rad, 정책 인덱스 순)
+_pre_physics_step(a)   a: (N,6) 정책 출력(raw) → 이력용 self._raw_act; clip ±0.8727 → 관절용 self._act
                        ※ 액션 노이즈(§6)는 관절로 보내는 사본에만. 이력에는 원본이 들어간다
   ×12 { _apply_action  robot.set_joint_position_target(self._act[:, a2j])
         sim.step }                                   ↑ 정책 인덱스 → 관절 인덱스 (find_joints, preserve_order)
-_get_dones()           mdp.walk_terminated(root_quat, root_pos, corner_z) ,
+_get_dones()           mdp.walk_terminated(root_pos, root_quat) ,
                        episode_length_buf >= 350        → (terminated, truncated)
 _get_rewards()         mdp.walk_rewards(...) 7항 → cfg 가중치로 합. death는 terminated에만.
                        각 항을 extras["log"]에 개별 기록
 _reset_idx(ids)        scene.reset → root/joint 초기화(§5) → potentials 재계산
                        → obs_layout.reset_history(rot_his, act_his, ids)      ← 반드시 여기
-_get_observations()    obs_layout.push(rot_his, act_his, root_quat_xyzw, self._act)
+_get_observations()    obs_layout.push(rot_his, act_his, root_quat_xyzw, raw_action, skip_mask=reset_buf)
                        → (N,40) = [rot 4×4 | act 4×6], 최신이 앞
 ```
+
+**리셋 직후 첫 관측 (2026-08-27 정정).** 관측은 리셋 뒤에 계산되므로 push 를 그대로
+하면 첫 관측에 실측 쿼터니언이 들어간다. 실기는 초기 이력으로 첫 추론을 하므로,
+리셋된 env 는 `skip_mask=reset_buf` 로 push 를 건너뛰어 첫 관측을 리셋값 그대로 둔다.
+§9.6 스모크 테스트의 "리셋 직후 obs 이력 = 규약값" 은 이 규칙으로 성립한다.
+
+**이력의 액션은 클립 전 (2026-08-27 정정).** 실기 rl_walk.py 는 ONNX 출력 mu 를
+그대로 action_history 에 넣고 safeClip 은 서보 지령에만 건다. env 도 같다: 이력 = raw,
+관절 목표 = clip. ACT_INIT=1.0 이 관절 한계 밖인 것이 그 정황이다.
 
 **이력 리셋이 `_reset_idx` 안에 있어야 하는 이유:** 관측은 리셋 **뒤에** 계산된다.
 다른 곳에서 하면 리셋된 env의 첫 관측에 죽은 에피소드의 이력이 섞인다. 리셋값은 §3
