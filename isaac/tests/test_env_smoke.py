@@ -104,6 +104,9 @@ def test_a2j_routes_policy_index_to_named_joint(env):
     실측으로 전혀 안 움직인다(16 env 전부 |Δ|<0.02, 부호도 무작위 — 측정해서 확인함).
     a2j 매핑 자체는 위 joint_pos_target 비트일치 검사가 물리와 무관하게 이미 확정하므로,
     방향 검사는 부하 없는 조건으로 옮겨 실제로 검증 가능하게 한다."""
+    # 이 테스트가 판별력을 가지려면 아티큘레이션 관절 순서가 정책 순서와 실제로 달라야 한다
+    # (§9.3: [joint2, joint4, joint6, joint1, joint3, joint5] vs POLICY_JOINT_NAMES)
+    assert tuple(env.robot.joint_names) != ol.POLICY_JOINT_NAMES
     base = torch.tensor(mdp.A_STAND, device=env.device).expand(env.num_envs, -1)
     airborne = env.scene.env_origins.clone()
     airborne[:, 2] += 1.0
@@ -131,20 +134,30 @@ def test_a2j_routes_policy_index_to_named_joint(env):
 
 
 def test_history_pairs_pre_step_quat_with_raw_action(env):
-    """실기 순서 재현: index 0 = (a_t, a_t 작용 *전* 쿼터니언), 액션은 클립 전 raw (§3, §9.3)."""
+    """실기 순서 재현: index 0 = (a_t, a_t 작용 *전* 쿼터니언), 액션은 클립 전 raw (§3, §9.3).
+
+    reset() 직후엔 root_quat_w 가 곧 리셋 자세라 "작용 전 q" 와 "리셋값 그대로" 를 구별할
+    수 없다(리뷰 발견) — 한 스텝 먼저 밟아 리셋 자세에서 벗어난 뒤에 캡처·검증한다."""
     env.reset()
+    env.step(_rand_actions(env))                       # 리셋 자세에서 벗어난다
+    prev_act_his0 = env._act_his[:, 0].clone()          # 이번 스텝의 action_cost 가 쓸 prev_actions
     q_pre = ol.wxyz_to_xyzw(env.robot.data.root_quat_w).clone()
     act = torch.full((env.num_envs, ol.NUM_ACTIONS), 1.5, device=env.device)   # 한계(0.8727) 밖
-    obs, _, terminated, _, _ = env.step(act)
+    obs, _, terminated, _, extras = env.step(act)
     alive = ~env.reset_buf
     assert alive.any()
     o = obs["policy"][alive]
     torch.testing.assert_close(o[:, 0:4], q_pre[alive], atol=1e-6, rtol=0)     # 작용 전 q
-    assert torch.all(o[:, 4:8] == torch.tensor([0.0, 0.0, 0.0, 1.0], device=env.device))
+    # index 1 = 직전 스텝의 작용 전 q = 리셋 자세(노이즈 포함). 둘이 달라야 이 검사가 판별력을 가진다
+    assert (o[:, 0:4] - o[:, 4:8]).abs().max() > 1e-4
     assert torch.all(o[:, 16:22] == 1.5)                                       # raw, 클립 안 됨
-    assert torch.all(o[:, 22:40] == ol.ACT_INIT)
+    assert torch.all(o[:, 28:40] == ol.ACT_INIT)                               # index 2,3 은 아직 초기값
     # 관절 목표는 클립됐다
     assert env.robot.data.joint_pos_target.abs().max() <= ol.ACTION_LIMIT + 1e-6
+    # action 보상항이 실제로 (raw_act, prev_act) 를 쓰는지 — _raw_act/_act 나 _act_his 인덱스가
+    # 뒤바뀌어도 안 걸리던 구멍(리뷰 발견)을 이 값으로 메운다
+    expected_action = ((act - prev_act_his0) ** 2).sum(-1).mean().item()
+    assert float(extras["log"]["rew/action"]) == pytest.approx(expected_action, abs=1e-4)
 
 
 def test_terminated_env_resets_with_init_history_and_death_reward(env):

@@ -96,11 +96,15 @@ class WalkEnv(DirectRLEnv):
             spawn_height=self.cfg.init_height, joint_pos=joint_pos,
             effort_limit=self.cfg.effort_limit,
         ))
+        ground_path = "/World/ground"
         ground = sim_utils.GroundPlaneCfg()
-        ground.func("/World/ground", ground)
+        ground.func(ground_path, ground)
         self.scene.clone_environments(copy_from_source=False)
         if self.device == "cpu":
-            self.scene.filter_collisions(global_prim_paths=[])
+            # global_prim_paths 는 "이 전역 prim 과는 충돌을 켠다" 목록이다(cloner 의 역필터
+            # 하에서 빈 리스트를 주면 바닥이 어느 env 의 충돌 집합에도 안 들어가 로봇이 뚫고
+            # 떨어진다) — 바닥은 반드시 넣어야 한다. 경로는 위에서 스폰한 값과 단일 출처.
+            self.scene.filter_collisions(global_prim_paths=[ground_path])
         self.scene.articulations["robot"] = self.robot
         light = sim_utils.DomeLightCfg(intensity=2500.0, color=(0.9, 0.9, 0.92))
         light.func("/World/light", light)
@@ -119,7 +123,9 @@ class WalkEnv(DirectRLEnv):
     def _pre_physics_step(self, actions: torch.Tensor):
         self._raw_act = actions.clone()                                   # 이력용 (클립 전)
         self._act = actions.clamp(-ol.ACTION_LIMIT, ol.ACTION_LIMIT)      # 관절용
-        self._quat_pre = self.robot.data.root_quat_w.clone()              # clone 필수 — 뷰면 물리 뒤 덮인다
+        # clone 필수 — root_quat_w 는 TimestampedBuffer 뷰라 물리 갱신엔 안 덮이지만,
+        # _reset_idx 의 write_root_pose_to_sim 은 그 버퍼를 제자리(in-place)로 덮어쓴다
+        self._quat_pre = self.robot.data.root_quat_w.clone()
 
     def _apply_action(self):
         self.robot.set_joint_position_target(self._act, joint_ids=self._a2j)

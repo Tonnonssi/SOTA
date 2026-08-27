@@ -11,14 +11,20 @@ obs = [쿼터니언 이력 4x4 (x,y,z,w) | 액션 이력 4x6], 최신이 앞, �
 
 1. 리셋 직후 첫 관측은 **리셋값 그대로**다. 실기는 초기 이력으로 첫 추론을 한다.
    DirectRLEnv 는 _reset_idx 뒤에 _get_observations 를 부르므로 env 는 리셋된 env 에
-   대해 push 를 건너뛰어야 한다 — push(..., skip_mask=reset_buf).
+   대해 push 를 건너뛰어야 한다. 다만 `DirectRLEnv.reset()`(전체 리셋 경로)은 `reset_buf`
+   를 건드리지 않으므로 `push(..., skip_mask=reset_buf)` 는 그 경로에서 깨진다 — 실제
+   구현(`walk_env.WalkEnv`)은 `_reset_idx` 안에서 세우고 `_get_observations` 뒤에 지우는
+   `_skip_push` 마스크를 쓴다 (§3 2026-08-27 결정, 이슈 #12).
 2. 이력에 들어가는 액션은 **클립 전 정책 출력**(rl_walk 의 mu)이다. 실기의 safeClip 은
    서보 지령에만 걸린다. ACTION_LIMIT 클립은 관절 목표에만 적용하고 이력에는 raw 를 넣는다.
    (ACT_INIT = 1.0 이 관절 한계 밖인 것도 이력이 raw 값이라는 정황이다.)
 3. 타이밍은 한 제어주기만큼 다르다. 실기는 a_t 를 publish 한 직후 IMU 를 읽어 a_t 와
    "a_t 가 작용하기 전" 쿼터니언을 짝짓고, 서보는 commands 큐 때문에 a_t 를 두 주기
-   뒤에 실행한다. env 는 a_t 가 0.1 s 작용한 뒤의 쿼터니언을 짝짓는다. 이 차이는 여기서
-   고치지 않는다 — 이슈 C(env)와 §6(DR, 액션 지연)에서 결정한다.
+   뒤에 실행한다. **2026-08-27 결정 (이슈 #12, §3):** env 는 실기의 짝짓기 순서를
+   재현한다 — `_pre_physics_step` 이 물리가 돌기 전 `root_quat_w` 를 clone 해 두고,
+   `_get_observations` 가 그 **작용 전** 쿼터니언을 push 한다. 이력 index 0 = (a_t, a_t
+   작용 전 q) 로 실기와 같다. 서보 두 주기 지연은 여기서 고치지 않는다 — §6(액션 지연 DR)
+   의 몫.
 
 torch 만 의존한다. Isaac 없음.
 """
