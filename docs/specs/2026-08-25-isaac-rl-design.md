@@ -855,6 +855,7 @@ USD에 구우면 둘 다 공짜로 맞는다.
 
 ```
 _pre_physics_step(a)   a: (N,6) 정책 출력(raw) → 이력용 self._raw_act; clip ±0.8727 → 관절용 self._act
+                       self._quat_pre = root_quat_w.clone()   ← 작용 전 쿼터니언 (실기 순서, §3 2026-08-27)
                        ※ 액션 노이즈(§6)는 관절로 보내는 사본에만. 이력에는 원본이 들어간다
   ×12 { _apply_action  robot.set_joint_position_target(self._act, joint_ids=a2j)
         sim.step }                                   ↑ 정책 인덱스 → 관절 인덱스 (find_joints, preserve_order)
@@ -866,14 +867,21 @@ _get_rewards()         terms, potentials = mdp.walk_reward_terms(...)   # 6항, 
                        terms 의 각 항을 extras["log"]에 개별 기록
 _reset_idx(ids)        scene.reset → root/joint 초기화(§5) → potentials 재계산
                        → obs_layout.reset_history(rot_his, act_his, ids)      ← 반드시 여기
-_get_observations()    obs_layout.push(rot_his, act_his, root_quat_xyzw, raw_action, skip_mask=reset_buf)
+_get_observations()    obs_layout.push(rot_his, act_his, wxyz_to_xyzw(self._quat_pre), self._raw_act,
+                                       skip_mask=self._skip_push)
                        → (N,40) = [rot 4×4 | act 4×6], 최신이 앞
 ```
 
 **리셋 직후 첫 관측 (2026-08-27 정정).** 관측은 리셋 뒤에 계산되므로 push 를 그대로
 하면 첫 관측에 실측 쿼터니언이 들어간다. 실기는 초기 이력으로 첫 추론을 하므로,
-리셋된 env 는 `skip_mask=reset_buf` 로 push 를 건너뛰어 첫 관측을 리셋값 그대로 둔다.
+리셋된 env 는 push 를 건너뛰어 첫 관측을 리셋값 그대로 둔다.
 §9.6 스모크 테스트의 "리셋 직후 obs 이력 = 규약값" 은 이 규칙으로 성립한다.
+
+> **2026-08-27 재정정 (이슈 #12).** 위에서 `skip_mask=reset_buf` 라고 적었으나 **틀렸다.**
+> `DirectRLEnv.reset()`(전체 리셋)은 `reset_buf` 를 건드리지 않으므로(`direct_rl_env.py:292–330`),
+> 그 경로에서 마스크가 전부 False 가 되어 첫 관측에 실측 쿼터니언이 들어간다. env 가
+> 직접 드는 `_skip_push` 마스크를 쓴다 — `_reset_idx` 가 켜고 `_get_observations` 가
+> 쓴 뒤 끈다. 스텝 경로와 리셋 경로 양쪽에서 성립한다.
 
 **이력의 액션은 클립 전 (2026-08-27 정정).** 실기 rl_walk.py 는 ONNX 출력 mu 를
 그대로 action_history 에 넣고 safeClip 은 서보 지령에만 건다. env 도 같다: 이력 = raw,
