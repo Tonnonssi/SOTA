@@ -164,3 +164,10 @@ def test_truncation_is_separate_from_termination():
     stand = torch.tensor([[0.095, 0.0785, 0.10365]] * 3, dtype=torch.float64)
     term, _ = mdp.walk_terminated(stand, IDENT.expand(3, 4))
     assert not term.any()     # 시간 초과는 terminated 에 섞이지 않는다
+
+
+def test_seat_corners_accepts_tensor_override():
+    center = torch.tensor([[0.0, 0.0, 0.10365]], dtype=torch.float64)
+    corners = torch.tensor(mdp.SEAT_CORNERS_LOCAL, dtype=torch.float64)   # Tensor 인자도 받아야 한다
+    z = mdp.seat_corner_heights(center, IDENT[None], corners)
+    torch.testing.assert_close(z, torch.full((1, 4), 0.10365 - 0.011, dtype=torch.float64))
