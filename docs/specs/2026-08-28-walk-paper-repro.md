@@ -46,7 +46,7 @@
 | 1 | 두 팔 모두 돌린다 | 스택 차이를 변수로 분리. 비용 2배(각 ~25 분)는 감당 가능 |
 | 2 | 액션 규약 = 래퍼가 `[−1, 1]` 클램프, env 는 그 값을 이력에 넣고 관절은 `±0.873` 으로 한 번 더 클립 | 논문(rl_games) 동작. env 무변경. 실기 raw 와의 차이는 bounds loss 가 `|mu| ≤ 1.1` 로 묶어 최대 0.1 rad |
 | 3 | 종료 = 두 팔 완주 + 같은 자 보고 | 재현 여부를 답하되 튜닝으로 번지지 않게 |
-| 4 | rsl_rl bounds loss 는 `optimizer.step` 훅 (~30줄) | `PPO.update()` 가 200줄 단일 메서드라 복사 없이 넣을 자리가 그것뿐. grad clip 뒤에 gradient 가 더해지는 차이는 1e-4 계수에서 무시 |
+| 4 | rsl_rl bounds loss 는 actor `output_mean` 텐서의 **gradient 훅** (~40줄) | `PPO.update()` 가 200줄 단일 메서드라 복사 없이 넣을 자리가 없다. `loss.backward()` 가 그래프를 해제하므로 step 직전의 두 번째 backward(브레인스토밍 때의 "optimizer.step 훅")는 동작하지 않는다 — 계획 작성 중 정정. 텐서 훅은 같은 backward 에 ∂(coef·b)/∂mu 를 더하므로 grad clip 이 총합에 걸려 rl_games 와 의미론이 같다 |
 | 5 | `eval.py` 를 선행 부품(A0)으로 정식화 | 두 팔 + `walk.onnx` 에 같은 자. 리포트 §9 의 함정을 코드로 고정 |
 
 ## 1. 액션 규약 (스펙 §3 개정)
@@ -103,10 +103,11 @@ policy mu ──clamp(−1, 1)──▶ a ──▶ 이력(obs)                 
 ```python
 class BoundedPPO(PPO):
     """rl_games 의 bound_loss 를 rsl_rl PPO 에 이식. soft_bound 1.1, 계수 bounds_loss_coef.
-    update() 는 200줄 단일 메서드라 끊어 넣을 자리가 없어 optimizer.step 을 감싼다 —
-    actor forward 훅이 마지막 minibatch 의 output_mean 을 잡아 두고, step 직전에
-    bound_loss.backward() 로 gradient 를 누적한다. rl_games 와의 차이: grad clip 이 bound
-    gradient 보다 먼저 걸린다 (1e-4 계수에서 무시)."""
+    update() 는 200줄 단일 메서드라 끊어 넣을 자리가 없고, loss.backward() 가 그래프를
+    해제하므로 step 직전의 두 번째 backward 도 불가하다. 대신 actor forward 훅이 output_mean
+    (= mlp_output 텐서, GaussianDistribution.update 가 Normal(mean=mlp_output) 으로 만든다) 에
+    텐서 gradient 훅을 걸어 ∂(coef·b)/∂mu 를 같은 backward 에 더한다 — clip_grad_norm_ 이
+    총합에 걸리므로 rl_games 와 의미론이 같다."""
     def __init__(self, *args, bounds_loss_coef: float = 1e-4, **kwargs): ...
 ```
 
@@ -180,7 +181,7 @@ PYTHONPATH= python isaac/scripts/eval.py --onnx models/walk.onnx --joint_order t
 - **rl_games 설치가 env 를 건드린다.** git 브랜치 의존, `gym` 구버전. 그래서 A3 뒤에 한다. 실패하면 A2 만 멈춘다.
 - **`reward_shaper 1.0`.** 논문이 IGE Ant 의 0.6 을 썼더라도 정규화 플래그 아래에서는 최적화 경로가 같다 —
   단, 이 불변성은 `normalize_advantage`/`normalize_value` 가 둘 다 켜져 있을 때만 성립하므로 두 플래그를 끄는 실험은 하지 않는다.
-- **A3 의 grad-clip 순서 차이.** 1e-4 에서 무시한다고 봤지만 측정하지 않았다. `bound_loss` 로그로 두 팔의 값을 비교한다.
+- **A3 의 훅이 그래프 밖에 걸릴 수 있다.** `output_mean` 이 `mlp_output` 과 같은 텐서 객체라는 데 의존한다(rsl_rl 5.0.1 확인). 버전이 바뀌어 `.clone()` 이 끼면 훅은 조용히 무효가 된다 — `Loss/bound` 로그와 A4 의 포화율 곡선이 검증.
 - **논문이 걸은 이유 3후보(리포트 §6)는 이 이슈로 하나만 닫힌다** — 스택. dt 와 131k env 는 그대로 열려 있다.
 - 두 팔 다 굳으면: 리포트 §8-2(정지가 안정하지 않게 — §6 노이즈)가 다음 이슈다. 한 팔만 걸으면 스택 차이가
   원인이라는 강한 신호.
