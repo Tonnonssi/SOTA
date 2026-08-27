@@ -856,8 +856,9 @@ _pre_physics_step(a)   a: (N,6) 정책 출력(raw) → 이력용 self._raw_act; 
         sim.step }                                   ↑ 정책 인덱스 → 관절 인덱스 (find_joints, preserve_order)
 _get_dones()           mdp.walk_terminated(root_pos, root_quat) ,
                        episode_length_buf >= 350        → (terminated, truncated)
-_get_rewards()         mdp.walk_rewards(...) 7항 → cfg 가중치로 합. death는 terminated에만.
-                       각 항을 extras["log"]에 개별 기록
+_get_rewards()         terms, potentials = mdp.walk_reward_terms(...)   # 6항, 가중치 미적용
+                       reward = mdp.walk_total(terms, weights, terminated)  # alive 가산, 종료 스텝은 death 로 대체
+                       terms 의 각 항을 extras["log"]에 개별 기록
 _reset_idx(ids)        scene.reset → root/joint 초기화(§5) → potentials 재계산
                        → obs_layout.reset_history(rot_his, act_his, ids)      ← 반드시 여기
 _get_observations()    obs_layout.push(rot_his, act_his, root_quat_xyzw, raw_action, skip_mask=reset_buf)
