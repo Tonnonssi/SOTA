@@ -93,4 +93,4 @@ def test_physics_layer_masses_and_coms(kit_app, usd_path):
             np.testing.assert_allclose(coms[i, :3], MUJOCO.bodies[name].com, atol=1e-4, err_msg=name)
     finally:
         sim.clear_all_callbacks()
-        sim.clear_instance()
+        sim_utils.SimulationContext.clear_instance()   # classmethod — conftest 의 teardown 과 같은 형태
