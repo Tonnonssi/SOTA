@@ -85,7 +85,7 @@ policy mu ──clamp(−1, 1)──▶ a ──▶ 이력(obs)                 
 | **`bounds_loss_coef`** | **1e-4** | [기본] Ant·Humanoid 공통 — 이 이슈의 핵심 |
 | `horizon_length` | 32 | [가정] 스펙 §7 결정 유지 (Ant 16 / Humanoid 32) |
 | `max_epochs` | 1500 | [가정] 4096 × 32 × 1500 = 196.6 M env-step, #15 와 동일 |
-| `reward_shaper.scale_value` | 1.0 | [가정] 논문 미상. Isaac Lab Ant 0.6, IGE Humanoid 0.01 — Table IV 값을 그대로 보려고 1.0 |
+| `reward_shaper.scale_value` | 1.0 | 논문 미상(IGE Ant 0.6, Humanoid 0.01). `normalize_advantage`·`normalize_value` 아래에서 정책·critic gradient 모두 보상 스케일에 불변이라 최적화에는 불활성 — 로그의 reward/스텝이 Table IV 산술(리포트 §3)과 그대로 맞도록 1.0 |
 | `grad_norm` / `truncate_grads` | 1.0 / True | [기본] |
 | `save_frequency` / `save_best_after` | 50 / 100 | 운영 |
 
@@ -167,19 +167,19 @@ PYTHONPATH= python isaac/scripts/eval.py --onnx models/walk.onnx --joint_order t
 |---|---|---|---|
 | A0 | `eval.py` + `test_eval_harness.py` | ~150 | `feat/18-eval-harness` |
 | A1 | 액션 규약: rsl_rl cfg `clip_actions=1.0`, 테스트 뒤집기, 스펙 §3·docstring 문구 | ~40 | `feat/18-action-clamp` |
-| A2 | rl_games 팔: 설치, yaml, 등록, `_upstream.py` + shim, 스모크 | ~130 | `feat/18-rl-games` |
 | A3 | rsl_rl 팔: `bounded_ppo.py`, cfg 서브클래스, 단위 테스트 | ~60 | `feat/18-bounded-ppo` |
+| A2 | rl_games 팔: 설치, yaml, 등록, `_upstream.py` + shim, 스모크 | ~130 | `feat/18-rl-games` |
 | A4 | 두 팔 전량 학습 + `docs/reports/2026-08-xx-walk-paper-repro.md` | 문서 | `docs/18-walk-paper-repro-report` |
 
 전부 `feat/15-train-path` 위에 쌓는다(#15 미머지, PR base 도 거기). 서브 이슈는 만들지 않는다 —
 브랜치 다섯 개가 모두 #18 하나에 대응한다(CLAUDE.md 규칙은 "브랜치는 이슈 하나에만", 역은 아니다).
-A0→A1→(A2 ∥ A3)→A4 순서.
+**A0→A1→A3→A2→A4** 순서 — A2 의 rl_games 설치가 env 를 건드리므로 env 에 손대지 않는 A3 를 먼저 끝낸다.
 
 ## 8. 위험과 열린 것
 
-- **rl_games 설치가 env 를 건드린다.** git 브랜치 의존, `gym` 구버전. 실패하면 A2 만 멈추고 A3 로 간다.
-- **`reward_shaper 1.0` 은 가정.** 논문이 IGE 기본(Ant 0.6?)을 썼을 수 있다. 바꾸면 Table IV 의 절대값
-  해석이 흔들리므로 1.0 으로 시작하고 A4 리포트에 남긴다.
+- **rl_games 설치가 env 를 건드린다.** git 브랜치 의존, `gym` 구버전. 그래서 A3 뒤에 한다. 실패하면 A2 만 멈춘다.
+- **`reward_shaper 1.0`.** 논문이 IGE Ant 의 0.6 을 썼더라도 정규화 플래그 아래에서는 최적화 경로가 같다 —
+  단, 이 불변성은 `normalize_advantage`/`normalize_value` 가 둘 다 켜져 있을 때만 성립하므로 두 플래그를 끄는 실험은 하지 않는다.
 - **A3 의 grad-clip 순서 차이.** 1e-4 에서 무시한다고 봤지만 측정하지 않았다. `bound_loss` 로그로 두 팔의 값을 비교한다.
 - **논문이 걸은 이유 3후보(리포트 §6)는 이 이슈로 하나만 닫힌다** — 스택. dt 와 131k env 는 그대로 열려 있다.
 - 두 팔 다 굳으면: 리포트 §8-2(정지가 안정하지 않게 — §6 노이즈)가 다음 이슈다. 한 팔만 걸으면 스택 차이가
