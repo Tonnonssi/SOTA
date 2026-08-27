@@ -57,7 +57,9 @@ def new_history(num_envs: int, device, dtype=torch.float32) -> tuple[torch.Tenso
 def reset_history(rot_his: torch.Tensor, act_his: torch.Tensor, env_ids: torch.Tensor) -> None:
     """env_ids 의 이력만 리셋값으로 되돌린다 (제자리)."""
     # (4,) 를 (K,4,4) 에 브로드캐스트: 이력 4 슬롯 전부를 리셋값으로
-    rot_his[env_ids] = torch.tensor(ROT_INIT, device=rot_his.device, dtype=rot_his.dtype)
+    # 스칼라 대입 — 호출마다 (4,) 텐서를 만들어 복사하지 않는다 (GPU 에서 특히)
+    rot_his[env_ids, :, :3] = 0.0
+    rot_his[env_ids, :, 3] = 1.0
     act_his[env_ids] = ACT_INIT
 
 
