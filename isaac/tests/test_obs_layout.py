@@ -80,3 +80,29 @@ def test_reset_history_only_touches_given_envs():
     ol.reset_history(rot, act, torch.tensor([1]))
     assert torch.all(rot[1] == torch.tensor([0., 0., 0., 1.])) and torch.all(act[1] == 1.0)
     assert torch.equal(rot[0, 0], torch.tensor([0.1, 0.2, 0.3, 0.9])) and torch.all(act[0, 0] == 0.5)
+
+
+def test_push_skip_mask_keeps_reset_envs_pristine():
+    rot, act = ol.new_history(3, "cpu")
+    q = torch.tensor([[0.1, 0.2, 0.3, 0.9]] * 3); a = torch.full((3, 6), 0.5)
+    ol.push(rot, act, q, a)                                   # 모두 한 번 진행
+    skip = torch.tensor([False, True, False])
+    ol.reset_history(rot, act, torch.tensor([1]))             # env 1 리셋
+    obs = ol.push(rot, act, q * 0.5, a * 0.2, skip_mask=skip)  # env 1 은 건너뜀
+    assert torch.equal(obs[1, 0:16], torch.tensor([0., 0., 0., 1.] * 4))   # 리셋값 그대로
+    assert torch.all(obs[1, 16:40] == 1.0)
+    assert torch.equal(obs[0, 0:4], (q * 0.5)[0]) and torch.equal(obs[2, 16:22], (a * 0.2)[2])
+
+
+def test_rl_walk_source_still_matches_reference():
+    """참조 구현은 src/rl_walk.py 의 세 줄을 옮긴 것이다. 원문이 바뀌면 여기서 걸린다."""
+    import os
+    repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    src = open(os.path.join(repo, "src", "rl_walk.py"), encoding="utf-8").read()
+    for needle in (
+        "rotation_history[:,  3] = 1.0",
+        "action_history = np.ones([numActionHis, 6])",
+        "np.concatenate([rotation, rotation_history], 0)[:-1, :]",
+        "np.concatenate([action, action_history], 0)[:-1, :]",
+    ):
+        assert needle in src, needle
