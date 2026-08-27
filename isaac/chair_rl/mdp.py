@@ -43,7 +43,7 @@ def up_proj(q: torch.Tensor) -> torch.Tensor:
 
 def heading_proj(q: torch.Tensor, root_pos: torch.Tensor, p_target: torch.Tensor) -> torch.Tensor:
     """R_q e_x · (p_target - p) / ||p_target - p||."""
-    fwd = quat_rotate(q, torch.tensor([1.0, 0.0, 0.0], dtype=q.dtype, device=q.device))
+    fwd = quat_rotate(q, q.new_tensor([1.0, 0.0, 0.0]))
     to_t = p_target - root_pos
     to_t = to_t / to_t.norm(dim=-1, keepdim=True).clamp_min(1e-9)
     return (fwd * to_t).sum(-1)
@@ -103,7 +103,7 @@ def walk_reward_terms(root_pos: torch.Tensor, root_quat: torch.Tensor, potential
                       dt: float = CONTROL_DT, p_target: torch.Tensor | None = None):
     """6개 항(가중치 미적용)과 새 potentials. alive/death 는 walk_total 이 처리한다."""
     if p_target is None:
-        p_target = torch.tensor(P_TARGET, dtype=root_pos.dtype, device=root_pos.device)
+        p_target = root_pos.new_tensor(P_TARGET)
     prog, new_pot = progress(potentials, root_pos, p_target, dt)
     terms = {
         "progress": prog,
@@ -153,7 +153,7 @@ def seat_corner_heights(root_pos: torch.Tensor, root_quat: torch.Tensor,
 def quat_dist_to_identity(q: torch.Tensor) -> torch.Tensor:
     """||q - [0,0,0,1]||. q 와 -q 는 같은 회전이므로 w >= 0 으로 맞춘 뒤 잰다."""
     qc = torch.where(q[:, 3:4] < 0, -q, q)
-    ident = torch.tensor([0.0, 0.0, 0.0, 1.0], dtype=q.dtype, device=q.device)
+    ident = q.new_tensor([0.0, 0.0, 0.0, 1.0])
     return (qc - ident).norm(dim=-1)
 
 

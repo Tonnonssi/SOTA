@@ -15,7 +15,10 @@ import torch
 from chair_rl import mdp
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-_spec = importlib.util.spec_from_file_location("chair_real_utils", os.path.join(REPO, "src", "utils.py"))
+_UTILS_PATH = os.path.join(REPO, "src", "utils.py")
+assert os.path.isfile(_UTILS_PATH), f"실기 참조 구현이 없다: {_UTILS_PATH}"
+_spec = importlib.util.spec_from_file_location("chair_real_utils", _UTILS_PATH)
+assert _spec is not None and _spec.loader is not None, f"spec 생성 실패: {_UTILS_PATH}"
 real_utils = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(real_utils)
 
