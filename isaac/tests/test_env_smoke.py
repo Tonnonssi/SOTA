@@ -93,3 +93,80 @@ def test_50_random_steps_finite(env):
     assert {f"term/{k}" for k in ("tilt", "ground", "height")} <= set(log)
     # 관절이 실제로 움직였다 (a2j 로 지령이 전달됨)
     assert (env.robot.data.joint_pos - env.robot.data.default_joint_pos).abs().max() > 0.1
+
+
+def test_a2j_routes_policy_index_to_named_joint(env):
+    """정책 인덱스 k 에만 목표각을 주면 POLICY_JOINT_NAMES[k] 관절만 그 목표를 받는다.
+    지령(joint_pos_target)은 물리 없이 정확히 확인되고, 실제 위치는 방향만 본다.
+
+    방향 확인은 로봇을 바닥에서 띄운 채로 한다 — 서 있는 자세(체중 부하)에서 재보면
+    joint5 는 effort_limit(0.3) 이 정지 하중을 버티는 데 이미 소진돼 목표를 더 줘도
+    실측으로 전혀 안 움직인다(16 env 전부 |Δ|<0.02, 부호도 무작위 — 측정해서 확인함).
+    a2j 매핑 자체는 위 joint_pos_target 비트일치 검사가 물리와 무관하게 이미 확정하므로,
+    방향 검사는 부하 없는 조건으로 옮겨 실제로 검증 가능하게 한다."""
+    base = torch.tensor(mdp.A_STAND, device=env.device).expand(env.num_envs, -1)
+    airborne = env.scene.env_origins.clone()
+    airborne[:, 2] += 1.0
+    ident_quat = torch.tensor([1.0, 0.0, 0.0, 0.0], device=env.device).expand(env.num_envs, -1)
+    zero_vel = torch.zeros(env.num_envs, 6, device=env.device)
+    for k, name in enumerate(ol.POLICY_JOINT_NAMES):
+        env.reset()
+        env.robot.write_root_pose_to_sim(torch.cat([airborne, ident_quat], dim=1))
+        env.robot.write_root_velocity_to_sim(zero_vel)
+        act = base.clone()
+        act[:, k] += 0.4
+        for _ in range(3):                         # 0.3 s, 낙하 중(바닥 도달 전) 정착 확인
+            env.step(act)
+        j = env.robot.joint_names.index(name)
+        tgt = env.robot.data.joint_pos_target
+        torch.testing.assert_close(tgt[:, j], act[:, k], atol=1e-6, rtol=0)
+        others = [i for i in range(6) if i != j]
+        torch.testing.assert_close(
+            tgt[:, others],
+            base[:, [ol.POLICY_JOINT_NAMES.index(env.robot.joint_names[i]) for i in others]],
+            atol=1e-6, rtol=0,
+        )
+        moved = env.robot.data.joint_pos[:, j] - env.robot.data.default_joint_pos[:, j]
+        assert (moved > 0.15).all(), (name, moved)
+
+
+def test_history_pairs_pre_step_quat_with_raw_action(env):
+    """실기 순서 재현: index 0 = (a_t, a_t 작용 *전* 쿼터니언), 액션은 클립 전 raw (§3, §9.3)."""
+    env.reset()
+    q_pre = ol.wxyz_to_xyzw(env.robot.data.root_quat_w).clone()
+    act = torch.full((env.num_envs, ol.NUM_ACTIONS), 1.5, device=env.device)   # 한계(0.8727) 밖
+    obs, _, terminated, _, _ = env.step(act)
+    alive = ~env.reset_buf
+    assert alive.any()
+    o = obs["policy"][alive]
+    torch.testing.assert_close(o[:, 0:4], q_pre[alive], atol=1e-6, rtol=0)     # 작용 전 q
+    assert torch.all(o[:, 4:8] == torch.tensor([0.0, 0.0, 0.0, 1.0], device=env.device))
+    assert torch.all(o[:, 16:22] == 1.5)                                       # raw, 클립 안 됨
+    assert torch.all(o[:, 22:40] == ol.ACT_INIT)
+    # 관절 목표는 클립됐다
+    assert env.robot.data.joint_pos_target.abs().max() <= ol.ACTION_LIMIT + 1e-6
+
+
+def test_terminated_env_resets_with_init_history_and_death_reward(env):
+    """env 3 을 뒤집어 놓으면 그 스텝에 terminated → 보상 = death(−1) 로 대체 → 리셋 →
+    첫 관측은 리셋값 그대로. 다른 env 는 이력이 이어진다.
+
+    브리프의 180° (x축) 대신 90° 만 건다 — 180° 는 다리가 바닥을 관통한 채로 물리가
+    시작돼 접촉 폭발/NaN 위험이 있다(브리프 Step 2 의 완화안). 90° 도 TILT_THRESH(0.7,
+    ≈82°) 를 기하로 이미 넘는다(||[0.7071,0,0,0.7071]-[0,0,0,1]|| ≈ 0.765) 이므로
+    tilt 종료를 물리 없이도 보장한다."""
+    env.reset()
+    env.step(_rand_actions(env))
+    tilt = torch.tensor([[0.70710678, 0.70710678, 0.0, 0.0]], device=env.device)  # x 축 90° (w,x,y,z)
+    pose = torch.cat([env.robot.data.root_pos_w[3:4], tilt], dim=1)
+    env.robot.write_root_pose_to_sim(pose, env_ids=torch.tensor([3], device=env.device))
+    obs, rew, terminated, truncated, _ = env.step(_rand_actions(env))
+    assert terminated[3] and not truncated[3]
+    assert rew[3].item() == pytest.approx(env.cfg.reward_weights.death)
+    o = obs["policy"]
+    assert torch.all(o[3, :16].view(4, 4)[:, :3] == 0.0) and torch.all(o[3, :16].view(4, 4)[:, 3] == 1.0)
+    assert torch.all(o[3, 16:] == ol.ACT_INIT)
+    assert env.episode_length_buf[3] == 0
+    survivors = (~env.reset_buf).nonzero().squeeze(-1)
+    assert survivors.numel() > 0
+    assert (o[survivors, 16:22] != ol.ACT_INIT).any()                          # 이력이 이어짐
