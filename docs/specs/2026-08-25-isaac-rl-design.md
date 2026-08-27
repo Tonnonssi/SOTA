@@ -754,6 +754,12 @@ roll/pitch/yaw, 서보 지령각 6개. 정성 비교("세 다리를 벌리고 �
 
 ### rsl_rl 유지 + 어댑터 (권고)
 
+> **2026-08-28 부분 개정 (이슈 #18).** rsl_rl 채택이 논문에서 벗어난 지점이었다 — rl_games 의
+> `bounds_loss_coef`·`clip_actions` 기본 동작이 없어 mu 가 한계 밖으로 도망가고 탐색이 죽었다
+> (`docs/reports/2026-08-28-walk-freeze-analysis.md` §4). 후속 학습은 rl_games 팔과 rsl_rl+bounds
+> 팔을 나란히 돌린다. 설계는 `docs/specs/2026-08-28-walk-paper-repro.md`. 이 절의 어댑터 논의는
+> rsl_rl 팔이 이기는 경우에만 되살아난다.
+
 섹션 1은 rsl_rl을 택했다. 그런데 `models/*.onnx`는 rl_games 산출물이다
 (`model._model.a2c_network.*`). rsl_rl의 `export_policy_as_onnx()`는 그래프 모양과
 출력 이름이 다르므로 계약을 자동으로 만족하지 않는다.
