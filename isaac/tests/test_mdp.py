@@ -187,3 +187,14 @@ def test_defaults_are_paper_constants():
                                      torch.zeros(1, 6, dtype=torch.float64), torch.zeros(1, 6, dtype=torch.float64),
                                      torch.zeros(1, 6, dtype=torch.float64))
     assert terms["progress"].item() == pytest.approx(0.0)
+
+
+def test_a_stand_matches_real_robot_standing_pose():
+    """논문 Table VI a_stand = [-0.1745, 0, -0.1745, 0, 0.1745, 0] 가 실기 config.STANDING_POS 의
+    sim 변환값과 같다 (설계문서 §4 "세 가지 함의" 1). keyframes.py 는 isaac/ 에 있고 conftest 가
+    isaac/ 를 sys.path 에 넣으므로 여기서 import 된다."""
+    import keyframes
+
+    sim = keyframes.real_deg_to_sim_rad(keyframes.safe_clip(keyframes.cfg.STANDING_POS))[0]
+    np.testing.assert_allclose(mdp.A_STAND, sim, atol=1e-6)
+    np.testing.assert_allclose(mdp.A_STAND, [-0.1745, 0.0, -0.1745, 0.0, 0.1745, 0.0], atol=1e-4)

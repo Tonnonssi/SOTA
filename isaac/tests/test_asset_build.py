@@ -92,5 +92,14 @@ def test_physics_layer_masses_and_coms(kit_app, usd_path):
                 continue
             np.testing.assert_allclose(coms[i, :3], MUJOCO.bodies[name].com, atol=1e-4, err_msg=name)
     finally:
+        # clear_instance() 는 콜백만 지우고 타임라인은 멈추지 않는다 — playing 인 채로 남으면 다음에
+        # 만들어지는 SimulationContext 가 reset()/step() 에서 "재생될 때까지" 도는 무한 루프에 빠진다
+        # (test_env_smoke.py 와 이 파일을 같은 세션에서 돌리면 재현됨 — 진단 근거는 task-2-report.md).
+        # 그래서 stop() 도 반드시 불러야 한다 — 다만 순서가 중요하다: stop() 은 (터미널 실행이 아닐 때)
+        # 안에서 app.update() 를 불러 STOP 이벤트를 동기 디스패치하는데, _app_control_on_stop_handle
+        # 콜백이 아직 구독돼 있으면 그 콜백이 "재생될 때까지" render() 를 도는 무한 루프에 빠진다(대화형
+        # 스크립트가 창을 열어 두게 하려는 의도된 동작 — reset() 은 이걸 피하려고 _disable_app_control_on_stop_handle 을
+        # 잠깐 켠다). clear_instance() 가 그 구독을 해제하므로, stop() 은 반드시 clear_instance() *뒤에* 부른다.
         sim.clear_all_callbacks()
         sim_utils.SimulationContext.clear_instance()   # classmethod — conftest 의 teardown 과 같은 형태
+        sim.stop()

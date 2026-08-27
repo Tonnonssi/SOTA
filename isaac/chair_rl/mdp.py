@@ -11,6 +11,7 @@ a 서보 지령각(6), ω 서보 각속도(6).
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 
 import torch
 
@@ -23,6 +24,12 @@ OMEGA_MAX = 10.472            # rad/s (= 600 deg/s)
 OMEGA_TOL = 1.0
 CONTROL_DT = 0.1          # 논문 dt: 제어 주기. progress 의 potentials 초기화와 스텝이 같은 값을 써야 한다
 MAX_EPISODE_LEN = 350     # 논문 Table III "episode exceeds 350"
+
+# 논문 Table VI 의 a_stand = [-0.1745, 0, -0.1745, 0, 0.1745, 0] (정책 인덱스 순서).
+# 실기 config.STANDING_POS [90,80,90,100,90,100] 의 역변환 deg2rad(90 - real[5-j]) 과 일치한다
+# (설계문서 §4) — walk 의 초기 자세이자 stand 의 목표 자세. 정확값은 ±10° 다.
+_DEG10 = math.radians(10.0)
+A_STAND = (-_DEG10, 0.0, -_DEG10, 0.0, _DEG10, 0.0)
 
 
 # ---------------------------------------------------------------- 회전 헬퍼 (xyzw)

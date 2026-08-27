@@ -7,7 +7,7 @@ name = "chair_rl"
 version = "0.0.1"
 description = "Chair-type tripedal robot: Isaac Lab RL env (paper arXiv:2404.05932)"
 requires-python = ">=3.11"
-dependencies = ["numpy", "torch"]
+dependencies = ["numpy", "torch", "gymnasium"]
 
 [tool.setuptools]
 packages = ["chair_rl"]
