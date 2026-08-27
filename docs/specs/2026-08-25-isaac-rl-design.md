@@ -454,6 +454,10 @@ append/pop) 때문에 서보는 a_t 를 두 주기 뒤에 실행한다. env 는 
 뒤 쿼터니언) 쌍이다. 한 주기 + 서보 두 주기의 차이는 학습 환경에서 고치지 않았고, 이슈
 C(어느 쿼터니언을 짝지을지)와 §6(액션 지연 DR)에서 결정한다.
 
+> **2026-08-27 결정 (이슈 #12).** env 는 실기 순서를 재현한다 — `_pre_physics_step` 에서
+> `root_quat_w` 를 clone 해 두고 `_get_observations` 가 그 **작용 전** 쿼터니언을 push 한다.
+> 이력 index 0 = (a_t, a_t 작용 전 q) 로 실기와 같다. 서보 두 주기 지연은 §6 액션 지연 DR 의 몫.
+
 ### 위치·자세의 기준 바디
 
 논문의 `p`(좌면 중심)와 `u_prj`(직립도)는 **루트 바디(`dummy`)** 기준이다.
@@ -538,7 +542,7 @@ decimation 12).
 
 **세 가지 구현상 함의.**
 
-1. **`a_stand`가 `keyframes.py`의 `STANDING_SIM`과 소수점까지 일치한다.**
+1. **`a_stand`가 `chair_sim.py`의 `STANDING_SIM`과 소수점까지 일치한다.** (학습 쪽 상수는 `mdp.A_STAND`, 이슈 #12)
    `[−0.1745, 0, −0.1745, 0, 0.1745, 0]` — 실기 `config.py`의 `STANDING_POS`를
    `simRad2realDeg()` 역변환한 값 그대로다. 논문의 액션 인덱스 규약이 이 레포의 변환과
    같다는 **독립 증거**이고, MJCF 트리 순회 순서(`JOINT_ORDERS["tree"]`)를 지지한다.
@@ -557,7 +561,7 @@ decimation 12).
 종료: 350 스텝(truncation) / flip `u_prj < −0.7` /
 fold `0.6 < u_prj 이고 max‖[θ₀,θ₁,θ₃,θ₅] − a_expand‖_∞ > 1`.
 
-**`keyframes.py`가 여기서 재사용된다.** `a_stand`가 `keyframes.py`의 `STANDING_SIM`과
+**실기 변환이 여기서 재사용된다.** `a_stand`가 `chair_sim.py`의 `STANDING_SIM`(= `keyframes.real_deg_to_sim_rad(STANDING_POS)`)과
 같으므로 학습 목표 자세와 실기 자세가 정의상 일치한다. 다만 `a_expand`는 키프레임에서
 오지 않는 별도 리터럴이므로 `mdp.py`에 상수로 못 박는다.
 
@@ -578,8 +582,8 @@ fold `0.6 < u_prj 이고 max‖[θ₀,θ₁,θ₃,θ₅] − a_expand‖_∞ > 1
 
 ### walk
 
-논문은 서 있는 자세에서 출발한다. 초기 관절각은 `a_stand`(= `keyframes.py`의
-`STANDING_SIM`), base는 접지 상태.
+논문은 서 있는 자세에서 출발한다. 초기 관절각은 `a_stand`(= `mdp.A_STAND`, `chair_sim.py`의
+`STANDING_SIM`과 같은 값), base는 접지 상태 — 좌면 중심 z = 0.101 m(§3 실측)로 근사.
 
 **yaw는 랜덤화하지 않는다.** progress의 `p_target = [10, 0, 0]`과 heading이 +x를 고정
 방향으로 박고 있어서, yaw를 흩뿌리면 "앞으로 걷기"가 "임의 방향으로 걷기"로 바뀐다.
@@ -852,8 +856,9 @@ USD에 구우면 둘 다 공짜로 맞는다.
 ```
 _pre_physics_step(a)   a: (N,6) 정책 출력(raw) → 이력용 self._raw_act; clip ±0.8727 → 관절용 self._act
                        ※ 액션 노이즈(§6)는 관절로 보내는 사본에만. 이력에는 원본이 들어간다
-  ×12 { _apply_action  robot.set_joint_position_target(self._act[:, a2j])
+  ×12 { _apply_action  robot.set_joint_position_target(self._act, joint_ids=a2j)
         sim.step }                                   ↑ 정책 인덱스 → 관절 인덱스 (find_joints, preserve_order)
+                       ※ 액션 열을 재배열하지 않는다 — a2j 는 "정책 k 번째 값이 갈 관절" 이므로 joint_ids 로 넘긴다
 _get_dones()           mdp.walk_terminated(root_pos, root_quat) ,
                        episode_length_buf >= 350        → (terminated, truncated)
 _get_rewards()         terms, potentials = mdp.walk_reward_terms(...)   # 6항, 가중치 미적용
@@ -920,6 +925,10 @@ class WalkEnvCfg(DirectRLEnvCfg):
 `gym.register("Chair-Walk-Direct-v0")`에 **rl_games와 rsl_rl cfg entry point를 둘 다**
 건다(`isaaclab_tasks`의 cartpole 관례). 뼈대는 라이브러리를 모르고, 선택(§8)은
 `train.py` 시점으로 미룬다.
+
+> **2026-08-27 축소 (이슈 #12).** 뼈대 C 는 `env_cfg_entry_point` 만 건다. agent cfg 는
+> 검증되지 않은 §7 하이퍼파라미터라 학습 이슈에서 실측과 함께 넣는다. entry point 는
+> 문자열이라 `import chair_rl` 이 Isaac 을 끌어오지 않는다.
 
 ### 9.6 테스트
 
